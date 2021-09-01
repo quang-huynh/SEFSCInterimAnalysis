@@ -1,0 +1,650 @@
+---
+title: "Build Operating Models for SA Species"
+author: "Nikolai"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(comment=NA,echo=FALSE,message=FALSE,warning=FALSE,fig.height=8,fig.width=6)
+
+library(car)
+library(DLMtool)
+library(MSEtool)
+library(stringr)
+ 
+library(bam.extras) # Nikolai's package
+
+```
+
+```{r user}
+length_sc <- .1 # Scalar (multiplier) to convert length units. MSEtool examples seem to use cm whereas BAM uses mm.
+
+```
+
+```{r user Stock}
+# Scalars to compute upper and lower bounds of random uniform distribution from mean value.
+sc <- 0
+sc2 <- 0.1
+M_constant_sc <- sc*c(-1,1)+1
+steep_sc <-      sc*c(-1,1)+1
+rec_sigma_sc <-  sc*c(-1,1)+1
+rec_AC_sc <-     sc*c(-1,1)+1 # for lag-1 recruitment autocorrelation
+Linf_sc <-       sc*c(-1,1)+1
+K_sc <-          sc*c(-1,1)+1
+t0_sc <-         sc*c(-1,1)+1
+len_cv_val_sc <- sc*c(-1,1)+1
+L_50_sc <-       sc*c(-1,1)+1
+L50_95_sc <-     sc*c(-1,1)+1 # Length increment from 50 percent to 95 percent maturity
+D_sc <-          sc*c(-1,1)+1 # Depletion
+
+### Specify values of OM slots for all species (See ?`Stock-class` for details)
+
+## Upper and lower bounds of random uniform distribution
+# Msd: Inter-annual variation in M (natural mortality) expressed as a coefficient of variation of a log-normal distribution.
+Msd <-    c(0,0)    # MSEtool default is usually c(0,0.1) 
+
+# Ksd: Inter-annual variation in K expressed as a coefficient of variation.
+Ksd <-    c(0,0) # MSEtool default is c(0,0.025)
+
+# Linfsd: Inter-annual variation in K expressed as a coefficient of variation.
+Linfsd <- c(0,0) # MSEtool default is c(0,0.025)
+
+# SRrel: type of stock-recruit relationship. Single value, switch (1) Beverton-Holt (2) Ricker. Integer
+SRrel <- 1
+
+# Size_area_1: The size of area 1 relative to area 2. Uniform distribution lower and upper bounds.
+Size_area_1 <- c(0.5,0.5)
+
+# Frac_area_1: The fraction of the unfished biomass in stock 1. Uniform distribution lower and upper bounds.
+Frac_area_1 <- c(0.5,0.5)
+
+# Prob_staying: The probability of individuals in area 1 remaining in area 1 over the course of one year. Uniform distribution lower and upper bounds.
+Prob_staying <- c(0.5,0.5)
+
+# M2: (Optional) Natural mortality rate at age. Vector of length 'maxage'. Positive real number
+
+# Use BAM R0?
+# If TRUE R0 = BAM rdat parms$R0. If FALSE R0=R0_default.
+# All the Stock objects supplied with MSEtool and the Huynh et al. stocks just use R0=1000.
+use_bam_R0 <- FALSE
+R0_default <- 1000
+```
+
+```{r user Fleet}
+# Scalars to compute upper and lower bounds of random uniform distribution from mean value.
+sc2 <- 0.1
+
+Eff_sc <-        sc2*c(-1,1)+1 # Effort (to compute EffLower and EffUpper vectors in Fleet objects)
+
+### Specify values of OM slots for all species (See ?`Fleet-class` for details)
+
+# Spat_targ: Distribution of fishing in relation to spatial biomass: fishing distribution is proportional to B^Spat_targ. Uniform distribution lower and upper bounds. Real numbers
+Spat_targ <- c(1,1)
+
+# Esd: Additional inter-annual variability in fishing mortality rate. Uniform distribution lower and upper bounds.
+Esd <- c(0.1,0.4) # The default for most MSEtool built-in fleets is c(0.1,0.4)
+
+# qinc: Average percentage change in fishing efficiency (applicable only to forward projection and input controls). Uniform distribution lower and upper bounds
+qinc <- c(0,0)
+
+# qcv: Inter-annual variability in fishing efficiency (applicable only to forward projection and input controls). Uniform distribution lower and upper bounds.
+qcv <- c(0,0)
+
+# L5: Shortest length at which 5% of the population is vulnerable to selection by the gear used in this fleet.
+L5_sc <- c(1,1)
+
+# LFS: Shortest length at which 100% of the population is vulnerable to selection by the gear used by this fleet.
+LFS_sc <- c(1,1)
+
+# Vmaxlen Proportion of fish selected by the gear at the asymptotic length (Stock@Linf). Upper and 
+# Lower bounds between 0 and 1. A value of 1 indicates that 100% of fish are selected at the
+# asymptotic length, and the selection curve is logistic. If Vmaxlen is less than 1 the selection
+# curve is dome shaped. For example, if Vmaxlen is 0.4, then only 40% of fish are vulnerable to
+# the fishing gear at the asymptotic length.
+Vmaxlen <- c(1,1)
+
+isRel <- FALSE
+
+# LR5 Shortest length at which 5% of the population is vulnerable to retention by the fleet.
+LR5 <- c(0,0) # Huynh et al (2020) used c(0,0)
+
+# LFR Shortest length where 100% of the population is vulnerable to retention by the fleet.
+LFR <- c(0,0) # Huynh et al (2020) used c(0,0)
+
+# Rmaxlen: Proportion of fish retained at the asymptotic length (Stock@Linf). Upper and Lower
+# bounds between 0 and 1. A value of 1 indicates that 100% of fish are retained at the asymptotic
+# length, and the selection curve is logistic. If Rmaxlen is less than 1 the retention curve is dome
+# shaped. For example, if Rmaxlen is 0.4, then only 40% of fish at the asymptotic length are
+# retained.
+Rmaxlen <- c(1,1)
+
+```
+
+```{r user Obs}
+Obs_name_user <- "Precise_Unbiased" # Huynh et al. used the "Precise_Unbiased" Obs model
+```
+
+```{r user Imp}
+Imp_name_user <- "Perfect_Imp"      # Huynh et al. used the "Perfect_Imp" Imp model
+```
+
+```{r admin}
+dir_bam <- "bam_rdat"
+
+```
+
+```{r read data}
+# Read in values that are not supplied by BAM rdat files
+Stock_otherValues <- read.csv("Stock_otherValues.csv")
+row.names(Stock_otherValues) <- Stock_otherValues$Name
+
+Fleet_otherValues <- read.csv("Fleet_otherValues.csv")
+row.names(Fleet_otherValues) <- Fleet_otherValues$Name
+
+
+# Read in operating models (OM) from Huynh et al 2020
+OM_filenames_huynh <- list.files("OM/Huynh_etal_2020")
+OM_names_huynh <- gsub(".rds","",OM_filenames_huynh)
+for(i in OM_filenames_huynh){
+  OM_i <- readRDS(paste0("OM/Huynh_etal_2020/",i))
+  assign(gsub(".rds","",i),OM_i)
+}
+```
+
+```{r modify data}
+# Identify slotNames for each object class
+sN_OM <- slotNames(testOM)
+sN_Stock <- slotNames(Snapper)
+sN_Fleet <- slotNames(Generic_Fleet)
+sN_Obs <- slotNames(Generic_Obs)
+sN_Imp <- slotNames(Perfect_Imp)
+# Identify slotNames unique to OM class objects
+sN_OM_unique <- sN_OM[which(!sN_OM%in%unique(c(sN_Stock,sN_Fleet,sN_Obs,sN_Imp)))]
+
+## Split up Huynh OM into components
+for(i in OM_names_huynh){
+  OM_i <- get(i)
+  spAbb <- gsub("_OM","",i)
+
+  assign(paste("Stock",spAbb,sep="_"),SubOM(OM_i,"Stock"))
+  assign(paste("Fleet",spAbb,sep="_"),SubOM(OM_i,"Fleet"))
+  assign(paste("Obs",spAbb,sep="_"),SubOM(OM_i,"Obs"))
+  assign(paste("Imp",spAbb,sep="_"),SubOM(OM_i,"Imp"))
+}
+rm("OM_i")
+```
+
+## Introduction
+
+I think that the MSEtool package will be effective for us to conduct MSEs to evaluate interim analysis methods. I'm going to start by build operating models (OM) from species that we have assessed with BAM.
+
+The document I'm putting together here is in many ways similar to text written in the \href{https://dlmtool.github.io/DLMtool/userguide/userguide.pdf}{`DLMtool` user guide}, and I draw heavily from that text as well as  (\href{https://cran.r-project.org/web/packages/MSEtool/MSEtool.pdf}{`MSEtool` help files}). But I am condensing it and focusing it on US South Atlantic species assessed with BAM.
+
+## Components of the OM
+
+There are four separate components to an OM:
+
+1. Stock - parameters describing the stock dynamics
+2. Fleet - parameters describing the fishing fleet dynamics
+3. Obs (Observation) - parameters describing the observation processes (how
+the observed fishery data is generated from the simulated data)
+4. Imp (Implementation) - parameters describing the management implementation
+(how well the management regulations are implemented)
+
+In DLMtool there are four S4 classes structured to organize elements of each of these components into slots. The four classes are aptly named: `Stock`, `Fleet`, `Obs`, and `Imp`.
+
+## Building a `Stock` object.
+
+There are various ways of building and operating model or one of the component objects (e.g. read in Excel spreadsheet). I think the best way is to modify an existing component object.
+
+There are two `Stock` objects available with the `DLMtool` that are based on SA stocks. `Snapper` is based on Red Snapper and `Porgy` is based on Red Porgy. Using these objects as references, I am writing a script to build stock objects for our species from BAM rdat files.
+
+```{r load bam data}
+bam_common_name <- unlist(str_extract_all(list.files(dir_bam),"^.*(?=(SEDAR))"))
+bam_rdat_name <- paste("rdat",bam_common_name,sep="_")
+# Get bam rdat lists
+for(file_i in list.files(dir_bam)){
+  bam_common_name_i <- unlist(str_extract_all(file_i,"^.*(?=(SEDAR))"))
+  rdat_i <- dget(file.path(dir_bam,file_i))
+  rdat_name_i <- paste("rdat",bam_common_name_i,sep="_")
+  assign(rdat_name_i,rdat_i)
+}
+rm("rdat_i")
+```
+
+```{r}
+bam_common_name_sub <- c(
+  "BlackSeaBass",
+  "BluelineTilefish",
+  "Gag",
+  "GoldenTilefish",
+  "GrayTriggerfish",
+  #"GreaterAmberjack", #rdat lacks parm.cons object
+  #"MenhadenAtl",
+  "RedGrouper",
+  #"RedPorgy", #rdat lacks parm.cons object
+  "RedSnapper",
+  "SnowyGrouper",
+  #"SpanishMackerel",
+  "VermilionSnapper"
+  )
+
+bam_rdat_sub <- paste("rdat",bam_common_name_sub,sep="_")
+```
+
+```{r compare Stocks}
+# Just some simple code to let you look at how items have been defined in various Stock objects
+Stock_avail <- avail("Stock")
+Stock_avail <- Stock_avail[!grepl("_OM",Stock_avail)]
+Stock_preview <- list()
+
+for(Stock_name_i in Stock_avail){
+  i <- which(Stock_avail==Stock_name_i)
+  Stock_i <- get(Stock_name_i)
+  data_i <- sapply(slotNames(Stock_i),FUN=function(x){
+    obj_i <- slot(Stock_i,x)
+    if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
+    paste(obj_i,collapse=", ")
+    })
+  # print(Stock_name_i)
+  # print(data_i)
+  Stock_preview[[i]] <- data_i
+  rm(Stock_i)
+}
+names(Stock_preview) <- Stock_avail
+
+ Stock_preview <- do.call(rbind,Stock_preview)
+```
+
+```{r build Stock}
+Stock_init <- new('Stock')
+
+for(rdat_name_i in bam_rdat_sub){
+  Stock_name_i <- gsub("rdat","Stock",rdat_name_i)
+  assign(Stock_name_i,Stock_init)
+  Stock_i <- get(Stock_name_i)
+  rdat_i <- get(rdat_name_i)
+  
+  info_i <- rdat_i$info
+  parms_i <- rdat_i$parms
+  parm.cons_i <- rdat_i$parm.cons
+  a.series_i <- rdat_i$a.series
+  
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  
+  herm_i <- Fleet_otherValues[Name_i,"Hermaphroditism"]
+  
+   Linf_i <- parm.cons_i$Linf[1]
+   K_i <- parm.cons_i$K[1]
+   t0_i <- parm.cons_i$t0[1]
+  
+  # Mess around with inconsistent rdat naming
+  names(a.series_i) <- gsub("mat.male.endyr","mat.male",names(a.series_i))
+  names(a.series_i) <- gsub("mat.fem.endyr","mat.female",names(a.series_i))
+  names(a.series_i) <- gsub("prop.female.endyr","prop.female",names(a.series_i))
+  
+  if(!"prop.female"%in%names(a.series_i)&"prop.male"%in%names(a.series_i)){
+    a.series_i$prop.female <- 1-a.series_i$prop.male
+  }
+  
+  # identify parameter names from BAM rdat
+  R0_name <- c("R0","BH.R0")[which(c("R0","BH.R0")%in%names(parms_i))][1]
+  
+  R0_i <- ifelse(use_bam_R0,
+                 "yes"=parms_i[[R0_name]], # Note that units may vary (e.g. eggs or Age-1))
+                 "no" =R0_default)
+  
+  # Set slot values
+  slot(Stock_i,"Name") <- Name_i
+  slot(Stock_i,"Common_Name") <- Name_i
+  slot(Stock_i,"Species") <- Name_i
+  slot(Stock_i,"maxage") <- Stock_otherValues[Name_i,"maxage"]
+  slot(Stock_i,"R0") <- R0_i # Note that units may vary (e.g. eggs or Age-1)
+  slot(Stock_i,"M") <- rdat_i$parm.cons$M_constant[1]*M_constant_sc
+  slot(Stock_i,"Msd") <- Msd
+  slot(Stock_i,"h") <- local({
+    a <- rdat_i$parm.cons$steep[1]*steep_sc
+    pmax(pmin(a,0.99),0.2) # Constrain to be between 0.2 and 0.99
+  })
+  slot(Stock_i,"SRrel") <- SRrel
+  slot(Stock_i,"Perr") <- parm.cons_i$rec_sigma[1]*rec_sigma_sc
+  slot(Stock_i,"AC") <- round(acf(rdat_i$t.series$recruits,plot=FALSE)$acf[2,,1]*rec_AC_sc,3) # lag-1 recruitment autocorrelation
+  
+  slot(Stock_i,"a") <- parms_i$wgt.a/length_sc^parms_i$wgt.b # Adjust a parameter for length units
+  slot(Stock_i,"b") <- parms_i$wgt.b
+  
+  slot(Stock_i,"Linf") <-  Linf_i*Linf_sc*length_sc
+  slot(Stock_i,"K") <- K_i*K_sc
+  slot(Stock_i,"t0") <- t0_i*t0_sc
+  slot(Stock_i,"LenCV") <- parm.cons_i$len_cv_val[1]*len_cv_val_sc
+  slot(Stock_i,"Ksd") <- Ksd
+  slot(Stock_i,"Linfsd") <- Linfsd
+  
+  slot(Stock_i,"Size_area_1")  <-  Size_area_1
+  slot(Stock_i,"Frac_area_1")  <-  Frac_area_1
+  slot(Stock_i,"Prob_staying") <-  Prob_staying
+  
+  # Compute maturity-at-length L50 and L50_95
+    mat_at_len_i <- local({
+    pmatage <- with(a.series_i,
+                    {
+                      if(herm_i=="gonochoristic"){ # If gonochoristic use female maturity
+                        out <- mat.female  
+                      }
+                      if(herm_i=="protogynous"){ # If protogynous, use a function of male and female maturity
+                        if(!exists("mat.male")){
+                          mat.male <- rep(1,nrow(a.series_i))
+                        }  
+                        out <- mat.female*prop.female+mat.male*(1-prop.female)
+                      }
+                      names(out) <- age
+                      out
+                    }  
+    )
+    age <- as.numeric(names(pmatage))
+    lenage <- setNames(vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age)*length_sc,age)
+    pmatdata <- cbind("matYes"=pmatage,"matNo"=1-pmatage)*1000
+    
+    # If maturity vector is knife-edged don't bother trying to estimate a logistic curve
+    if(all(pmatage%in%c(0,1))){
+    age_1 <- age[max(which(pmatage==0))]
+    age_2 <- age[min(which(pmatage==1))]  
+      
+    len_1 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_1)*length_sc
+    len_2 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_2)*length_sc
+    
+    age50 <- age_1+0.5*(age_2-age_1)
+    age95 <- age_1+0.95*(age_2-age_1)
+    
+    len50 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age50)*length_sc
+    len95 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age95)*length_sc
+    
+    age_pr <- seq(0,max(age),length=1000)
+    len_pr <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_pr)*length_sc
+    pmat_pr <- approx(age,pmatage,xout = age_pr)$y
+
+    }else{
+    fit <- glm(pmatdata~age,family=binomial(link='logit'))
+    age_pr <- seq(0,max(age),length=1000)
+    len_pr <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_pr)*length_sc
+    pmat_pr <- predict(fit,type="response",newdata = data.frame(age=age_pr))
+  
+    age50 <- age_pr[which.min(abs(pmat_pr-0.50))] # age at 50% maturity
+    age95 <- age_pr[which.min(abs(pmat_pr-0.95))] # age at 95% maturity
+    
+    len50 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age50)*length_sc # length at 50% maturity
+    len95 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age95)*length_sc # length at 95% maturity
+    }
+    
+    # par(mfrow=c(2,1))
+    # 
+    # plot(age,pmatage,pch=16,main=Name_i,xlim=range(c(0,age)),ylim=c(0,1))
+    # points(age_pr,pmat_pr,type="l")
+    # abline(v=c(age50,age95),col="blue",lty=2)
+    # 
+    # plot(lenage,pmatage,pch=16,main=Name_i,xlab="length",xlim=range(c(0,lenage)),ylim=c(0,1))
+    # points(len_pr,pmat_pr,type="l")
+    # abline(v=c(len50,len95),col="blue",lty=2)    
+
+    return(list("L50"=len50,"L50_95"=len95-len50))
+    })
+    
+    slot(Stock_i,"L50") <- mat_at_len_i$L50*L_50_sc 
+    slot(Stock_i,"L50_95") <- mat_at_len_i$L50_95*L50_95_sc
+  
+  # Compute current level of depletion
+    SSBend_i <- parms_i$SSBmsy*parms_i$SSBend.SSBmsy
+    D_i <- SSBend_i/parms_i$SSB0
+    
+    slot(Stock_i,"D") <- D_i*D_sc
+    
+    slot(Stock_i,"Source") <- paste0(paste(unlist(info_i[c("species","title","date")]),collapse = "; "),"; rdat file")
+    
+  assign(Stock_name_i,Stock_i)
+}
+
+```
+
+```{r compare Fleets}
+# Just some simple code to let you look at how items have been defined in various Fleet objects
+Fleet_avail <- avail("Fleet")
+Fleet_avail <- Fleet_avail[!grepl("_OM",Fleet_avail)]
+Fleet_preview <- list()
+
+for(Fleet_name_i in Fleet_avail){
+  i <- which(Fleet_avail==Fleet_name_i)
+  Fleet_i <- get(Fleet_name_i)
+  data_i <- sapply(slotNames(Fleet_i),FUN=function(x){
+    obj_i <- slot(Fleet_i,x)
+    if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
+    paste(obj_i,collapse=", ")
+    })
+  # print(Fleet_name_i)
+  # print(data_i)
+  Fleet_preview[[i]] <- data_i
+  rm(Fleet_i)
+}
+names(Fleet_preview) <- Fleet_avail
+
+ Fleet_preview <- do.call(rbind,Fleet_preview)
+```
+
+```{r build Fleet}
+Fleet_init <- new('Fleet')
+for(rdat_name_i in bam_rdat_sub){
+  Fleet_name_i <- gsub("rdat","Fleet",rdat_name_i)
+  assign(Fleet_name_i,Fleet_init)
+  Fleet_i <- get(Fleet_name_i)
+  rdat_i <- get(rdat_name_i)
+  
+  info_i <- rdat_i$info
+  parms_i <- rdat_i$parms
+  parm.cons_i <- rdat_i$parm.cons
+  years_i <- paste(parms_i$styr:parms_i$endyr)
+  t.series_i <- rdat_i$t.series[years_i,]
+  
+  Name_i <- gsub("rdat_","",rdat_name_i)
+
+  # Mess around with inconsistent rdat naming
+  names(t.series_i) <- gsub("total.L.wgt.klb","total.L.klb",names(t.series_i))    
+  
+  # identify parameter names from BAM rdat
+  # R0_name <- c("R0","BH.R0")[which(c("R0","BH.R0")%in%names(parms_i))][1]
+  
+  print(rdat_name_i)
+  
+  ## Effort
+  # E=C/qB # Effort calculation from Haddon 2011 page 290 Eq. 11.4
+  # E=C/B  # If we ignore units we can just use this
+  E_i <- local({
+    C_i <- t.series_i$total.L.klb
+    B_i <- t.series_i$B
+    E_i <- C_i/B_i
+    names(E_i) <- years_i
+    E_i
+    })
+  
+  # Set slot values
+   slot(Fleet_i,"Name") <- Name_i
+   slot(Fleet_i,"Spat_targ") <- Spat_targ
+   slot(Fleet_i,"Esd") <- Esd
+  
+   slot(Fleet_i,"EffYears") <- as.numeric(years_i)
+   slot(Fleet_i,"EffLower") <- E_i*Eff_sc[1]
+   slot(Fleet_i,"EffUpper") <- E_i*Eff_sc[2]
+   
+  # Estimate length at 5% and full (100%) selection
+   sel_at_len_i <- local({
+   seldata_i <- rdat_i$sel.age$sel.v.wgted.L
+   seldata_i <- seldata_i/max(seldata_i) # Scaled as a proportion of maximum selectivity
+   
+   age <- as.numeric(names(seldata_i))
+   selage <- seldata_i 
+   
+   age_pr <- seq(min(age),max(age),length=1000)
+   sel_pr <- approx(age,selage,xout = age_pr)$y
+   
+   agesel_05 <- age_pr[which.min(abs(sel_pr-0.05))] # age at 5% selection
+   agesel_100 <- age_pr[which.min(abs(sel_pr-1.00))] # age at 100% selection
+   
+   Linf_i <- parm.cons_i$Linf[1]
+   K_i <- parm.cons_i$K[1]
+   t0_i <- parm.cons_i$t0[1]
+   lenage <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age)*length_sc
+   len_pr <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_pr)*length_sc
+   
+   lensel_05 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=agesel_05)*length_sc # Length at 5% selection
+   lensel_100 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=agesel_100)*length_sc # Length at 100% selection
+   
+   # par(mfrow=c(2,1))
+   # plot(age,selage,pch=16,main=Name_i)
+   # points(age_pr,sel_pr,type="l")
+   # abline(v=c(agesel_05,agesel_100),col="blue",lty=2)
+   # 
+   # plot(lenage,selage,pch=16,main=Name_i)
+   # points(len_pr,sel_pr,type="l")
+   # abline(v=c(lensel_05,lensel_100),col="blue",lty=2)
+
+   return(list("L5"=lensel_05,"LFS"=lensel_100))
+   })
+   
+    slot(Fleet_i,"L5") <- sel_at_len_i$L5*L5_sc
+    slot(Fleet_i,"LFS") <- sel_at_len_i$LFS*LFS_sc
+    
+    slot(Fleet_i,"LR5") <- LR5
+    slot(Fleet_i,"LFR") <- LFR
+    
+    slot(Fleet_i,"isRel") <- isRel
+    
+    slot(Fleet_i,"Vmaxlen") <- Vmaxlen
+    slot(Fleet_i,"Rmaxlen") <- Rmaxlen
+    
+    slot(Fleet_i,"CurrentYr") <- parms_i$endyr
+    
+   
+   assign(Fleet_name_i,Fleet_i)
+}
+```
+
+```{r compare Obs}
+# Just some simple code to let you look at how items have been defined in various Obs objects
+Obs_avail <- avail("Obs")
+Obs_avail <- Obs_avail[!grepl("_OM",Obs_avail)]
+Obs_preview <- list()
+
+for(Obs_name_i in Obs_avail){
+  i <- which(Obs_avail==Obs_name_i)
+  Obs_i <- get(Obs_name_i)
+  data_i <- sapply(slotNames(Obs_i),FUN=function(x){
+    obj_i <- slot(Obs_i,x)
+    if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
+    paste(obj_i,collapse=", ")
+    })
+  # print(Obs_name_i)
+  # print(data_i)
+  Obs_preview[[i]] <- data_i
+  rm(Obs_i)
+}
+names(Obs_preview) <- Obs_avail
+
+ Obs_preview <- do.call(rbind,Obs_preview)
+```
+
+```{r build Obs}
+  Obs_init <- get(Obs_name_user)
+for(rdat_name_i in bam_rdat_sub){
+  Obs_name_i <- gsub("rdat","Obs",rdat_name_i)
+  assign(Obs_name_i,Obs_init)
+  Obs_i <- get(Obs_name_i)
+  rdat_i <- get(rdat_name_i)
+  
+  info_i <- rdat_i$info
+  parms_i <- rdat_i$parms
+  parm.cons_i <- rdat_i$parm.cons
+  years_i <- paste(parms_i$styr:parms_i$endyr)
+  t.series_i <- rdat_i$t.series[years_i,]
+  
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  
+  # Set slot values
+  slot(Obs_i,"Name") <- Name_i
+  
+  assign(Obs_name_i,Obs_i)
+  
+}
+```
+
+```{r compare Imp}
+# Just some simple code to let you look at how items have been defined in various Imp objects
+Imp_avail <- avail("Imp")
+Imp_avail <- Imp_avail[!grepl("_OM",Imp_avail)]
+Imp_preview <- list()
+
+for(Imp_name_i in Imp_avail){
+  i <- which(Imp_avail==Imp_name_i)
+  Imp_i <- get(Imp_name_i)
+  data_i <- sapply(slotNames(Imp_i),FUN=function(x){
+    obj_i <- slot(Imp_i,x)
+    if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
+    paste(obj_i,collapse=", ")
+    })
+  # print(Imp_name_i)
+  # print(data_i)
+  Imp_preview[[i]] <- data_i
+  rm(Imp_i)
+}
+names(Imp_preview) <- Imp_avail
+
+Imp_preview <- do.call(rbind,Imp_preview)
+```
+
+```{r build Imp}
+  Imp_init <- get(Imp_name_user)
+for(rdat_name_i in bam_rdat_sub){
+  Imp_name_i <- gsub("rdat","Imp",rdat_name_i)
+  assign(Imp_name_i,Imp_init)
+  Imp_i <- get(Imp_name_i)
+
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  
+  assign(Imp_name_i,Imp_i)
+}
+```
+
+```{r add cpars}
+# NOTE: There are good reasons to add values to the OM with cpars. See text below.
+
+# "By default, DLMtool samples the operating model parameters from a uniform
+# distribution. Because the parameters are sampled independently, it is not possible
+# to generate correlated samples. However, the cpars slot in the OM object can be
+# used to pass custom samples into the MSE.
+# The addition of the cpars slot provides a lot of flexibility to the DLMtool, and
+# allows users full control of all parameters used in the model.
+
+# It is also possible to supply custom generated time-varing values or other 
+# values to internal parameters using the cpars slot. For example, time-varying natural
+# mortality or selectivity patterns. These are referred to as internal custom
+# parameters."
+```
+
+```{r assemble OM}
+for(rdat_name_i in bam_rdat_sub){
+  OM_name_i <- gsub("rdat","OM",rdat_name_i)
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  # assign(OM_name_i,OM_init)
+  Stock_i <- get(paste0("Stock_",Name_i))
+  Fleet_i <- get(paste0("Fleet_",Name_i))
+  Obs_i <- get(paste0("Obs_",Name_i))
+  Imp_i <- get(paste0("Imp_",Name_i))
+  OM_i <- new("OM", Stock_i, Fleet_i, Obs_i, Imp_i)
+  
+  assign(OM_name_i,OM_i)
+  rm("OM_i")
+}
+
+# myOM <- new("OM", Rockfish, Generic_Fleet, Generic_Obs, Perfect_Imp)
+```
+
