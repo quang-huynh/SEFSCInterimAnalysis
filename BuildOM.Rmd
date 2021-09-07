@@ -12,23 +12,45 @@ knitr::opts_chunk$set(comment=NA,echo=FALSE,message=FALSE,warning=FALSE,fig.heig
 
 library(car)
 library(DLMtool)
+# library(faux) # Simulation for Factorial Designs
+# devtools::install_github("james-thorson/FishLife")
+library(FishLife)
 library(MSEtool)
+library(MultiRNG) # Multivariate Pseudo-Random Number Generation
+library(rfishbase)
 library(stringr)
  
-library(bam.extras) # Nikolai's package
+library(bamExtras) # Nikolai's package
+
+source("Plot_taxa_NK.R")
 
 ```
 
 ```{r user}
 length_sc <- .1 # Scalar (multiplier) to convert length units. MSEtool examples seem to use cm whereas BAM uses mm.
+plot_OM <- FALSE # Switch for plotting OM. It takes a while to plot them all
 
+```
+
+```{r user OM}
+Agency <- "NMFS SEFSC"
+Region <- "Southeast US Atlantic"
+Sponsor <- "none"
+Latitude <-  mean(c(25.0,35.6))
+Longitude <- mean(c(-81.5,-74.0))
+nsim <- 48 # The number of simulations (48 is the minimum number you can run in parallel)
+proyears <- 50 # The number of projected years
+interval <- 4  # The assessment interval - how often would you like to update the management system?
+pstar <- 0.5 # The percentile of the sample of the management recommendation for each method
+maxF <- 0.8 # Maximum instantaneous fishing mortality rate that may be simulated for any given age class
+reps <- 1 # Number of samples of the management recommendation for each method. Note that when this is set to 1, the mean value of the data inputs is used
 ```
 
 ```{r user Stock}
 # Scalars to compute upper and lower bounds of random uniform distribution from mean value.
 sc <- 0
 sc2 <- 0.1
-M_constant_sc <- sc*c(-1,1)+1
+M_constant_sc <- sc2*c(-1,1)+1
 steep_sc <-      sc*c(-1,1)+1
 rec_sigma_sc <-  sc*c(-1,1)+1
 rec_AC_sc <-     sc*c(-1,1)+1 # for lag-1 recruitment autocorrelation
@@ -71,6 +93,14 @@ Prob_staying <- c(0.5,0.5)
 # All the Stock objects supplied with MSEtool and the Huynh et al. stocks just use R0=1000.
 use_bam_R0 <- FALSE
 R0_default <- 1000
+
+# Default autocorrelation for rec devs (in log space)
+AC_default <- NA#c(0.2)
+
+# par_cv: When generating parameters for Stock objects, mean values are observed from rdat.
+#         Coefficient of variation (CV) values are set to compute the standard deviation of
+#         a normal distribution from which to sample parameter values
+par_cv <- c("TLinfinity"=0.2,"K"=0.2,"M"=0.2)
 ```
 
 ```{r user Fleet}
@@ -148,31 +178,49 @@ row.names(Fleet_otherValues) <- Fleet_otherValues$Name
 # Read in operating models (OM) from Huynh et al 2020
 OM_filenames_huynh <- list.files("OM/Huynh_etal_2020")
 OM_names_huynh <- gsub(".rds","",OM_filenames_huynh)
+OM_names_huynh_new <- paste0("OM_",gsub("_OM","",OM_names_huynh))
 for(i in OM_filenames_huynh){
   OM_i <- readRDS(paste0("OM/Huynh_etal_2020/",i))
-  assign(gsub(".rds","",i),OM_i)
+  OM_name_i <- paste0("OM_",gsub("_OM.rds","",i))
+  assign(OM_name_i,OM_i)
 }
+rm(OM_i)
+
+# Get growth parameter data downloaded with rfishbase
+if("D.Gro.csv"%in%list.files()){
+  D.Gro <- read.csv("D.Gro.csv")
+  }else{
+    D.Gro <- popgrowth(limit=11000) # Get growth parameters for all species available. Takes about 60 secs
+    write.csv(D.Gro,"D.Gro.csv",row.names = FALSE)
+  } 
+
+if("D.taxa.csv"%in%list.files()){
+  D.taxa <- read.csv("D.taxa.csv")
+  }else{
+    D.taxa <- load_taxa() # Load taxonomy data
+    write.csv(D.taxa,"D.taxa.csv",row.names = FALSE)
+  }
 ```
 
 ```{r modify data}
 # Identify slotNames for each object class
-sN_OM <- slotNames(testOM)
-sN_Stock <- slotNames(Snapper)
-sN_Fleet <- slotNames(Generic_Fleet)
-sN_Obs <- slotNames(Generic_Obs)
-sN_Imp <- slotNames(Perfect_Imp)
-# Identify slotNames unique to OM class objects
-sN_OM_unique <- sN_OM[which(!sN_OM%in%unique(c(sN_Stock,sN_Fleet,sN_Obs,sN_Imp)))]
+# sN_OM <- slotNames(testOM)
+# sN_Stock <- slotNames(Snapper)
+# sN_Fleet <- slotNames(Generic_Fleet)
+# sN_Obs <- slotNames(Generic_Obs)
+# sN_Imp <- slotNames(Perfect_Imp)
+# # Identify slotNames unique to OM class objects
+# sN_OM_unique <- sN_OM[which(!sN_OM%in%unique(c(sN_Stock,sN_Fleet,sN_Obs,sN_Imp)))]
 
 ## Split up Huynh OM into components
-for(i in OM_names_huynh){
+for(i in OM_names_huynh_new){
   OM_i <- get(i)
-  spAbb <- gsub("_OM","",i)
+  spAbb_i <- gsub("OM_","",i)
 
-  assign(paste("Stock",spAbb,sep="_"),SubOM(OM_i,"Stock"))
-  assign(paste("Fleet",spAbb,sep="_"),SubOM(OM_i,"Fleet"))
-  assign(paste("Obs",spAbb,sep="_"),SubOM(OM_i,"Obs"))
-  assign(paste("Imp",spAbb,sep="_"),SubOM(OM_i,"Imp"))
+  assign(paste("Stock",spAbb_i,sep="_"),SubOM(OM_i,"Stock"))
+  assign(paste("Fleet",spAbb_i,sep="_"),SubOM(OM_i,"Fleet"))
+  assign(paste("Obs",spAbb_i,sep="_"),SubOM(OM_i,"Obs"))
+  assign(paste("Imp",spAbb_i,sep="_"),SubOM(OM_i,"Imp"))
 }
 rm("OM_i")
 ```
@@ -215,17 +263,17 @@ for(file_i in list.files(dir_bam)){
 rm("rdat_i")
 ```
 
-```{r}
+```{r user bam species}
 bam_common_name_sub <- c(
   "BlackSeaBass",
   "BluelineTilefish",
   "Gag",
   "GoldenTilefish",
   "GrayTriggerfish",
-  #"GreaterAmberjack", #rdat lacks parm.cons object
+  "GreaterAmberjack",
   #"MenhadenAtl",
   "RedGrouper",
-  #"RedPorgy", #rdat lacks parm.cons object
+  "RedPorgy",
   "RedSnapper",
   "SnowyGrouper",
   #"SpanishMackerel",
@@ -235,10 +283,10 @@ bam_common_name_sub <- c(
 bam_rdat_sub <- paste("rdat",bam_common_name_sub,sep="_")
 ```
 
-```{r compare Stocks}
+```{r compare Stocks, eval=TRUE}
 # Just some simple code to let you look at how items have been defined in various Stock objects
 Stock_avail <- avail("Stock")
-Stock_avail <- Stock_avail[!grepl("_OM",Stock_avail)]
+Stock_avail <- Stock_avail[!grepl("OM_",Stock_avail)]
 Stock_preview <- list()
 
 for(Stock_name_i in Stock_avail){
@@ -249,8 +297,6 @@ for(Stock_name_i in Stock_avail){
     if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
     paste(obj_i,collapse=", ")
     })
-  # print(Stock_name_i)
-  # print(data_i)
   Stock_preview[[i]] <- data_i
   rm(Stock_i)
 }
@@ -261,6 +307,9 @@ names(Stock_preview) <- Stock_avail
 
 ```{r build Stock}
 Stock_init <- new('Stock')
+
+# Initialize objects for saving computed values
+rec_AC <- A50 <- L50 <- setNames(rep(NA,length(bam_common_name_sub)),bam_common_name_sub)
 
 for(rdat_name_i in bam_rdat_sub){
   Stock_name_i <- gsub("rdat","Stock",rdat_name_i)
@@ -301,9 +350,10 @@ for(rdat_name_i in bam_rdat_sub){
   slot(Stock_i,"Name") <- Name_i
   slot(Stock_i,"Common_Name") <- Name_i
   slot(Stock_i,"Species") <- Name_i
-  slot(Stock_i,"maxage") <- Stock_otherValues[Name_i,"maxage"]
+  slot(Stock_i,"maxage") <- length(a.series_i$age) # #Stock_otherValues[Name_i,"maxage"]
   slot(Stock_i,"R0") <- R0_i # Note that units may vary (e.g. eggs or Age-1)
-  slot(Stock_i,"M") <- rdat_i$parm.cons$M_constant[1]*M_constant_sc
+  slot(Stock_i,"M") <-  a.series_i$M*M_constant_sc[1] # lower bound of age-dependent M
+  slot(Stock_i,"M2") <- a.series_i$M*M_constant_sc[2] # upper bound of age-dependent M
   slot(Stock_i,"Msd") <- Msd
   slot(Stock_i,"h") <- local({
     a <- rdat_i$parm.cons$steep[1]*steep_sc
@@ -311,7 +361,17 @@ for(rdat_name_i in bam_rdat_sub){
   })
   slot(Stock_i,"SRrel") <- SRrel
   slot(Stock_i,"Perr") <- parm.cons_i$rec_sigma[1]*rec_sigma_sc
-  slot(Stock_i,"AC") <- round(acf(rdat_i$t.series$recruits,plot=FALSE)$acf[2,,1]*rec_AC_sc,3) # lag-1 recruitment autocorrelation
+  rec_AC_i <- local({
+      logR.dev_i <- rdat_i$t.series$logR.dev
+      if(all(logR.dev_i==0)){
+        out <- AC_default}else{
+        out <- acf(logR.dev_i,plot=FALSE)$acf[2,,1] # lag-1 autocorrelation  
+        }
+      out
+  })
+  rec_AC[Name_i] <- rec_AC_i
+  
+  slot(Stock_i,"AC") <- round(rec_AC_i*rec_AC_sc,3) # Upper and lower limits
   
   slot(Stock_i,"a") <- parms_i$wgt.a/length_sc^parms_i$wgt.b # Adjust a parameter for length units
   slot(Stock_i,"b") <- parms_i$wgt.b
@@ -345,7 +405,7 @@ for(rdat_name_i in bam_rdat_sub){
                     }  
     )
     age <- as.numeric(names(pmatage))
-    lenage <- setNames(vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age)*length_sc,age)
+    lenage <- setNames(vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age)*length_sc,age)
     pmatdata <- cbind("matYes"=pmatage,"matNo"=1-pmatage)*1000
     
     # If maturity vector is knife-edged don't bother trying to estimate a logistic curve
@@ -353,30 +413,30 @@ for(rdat_name_i in bam_rdat_sub){
     age_1 <- age[max(which(pmatage==0))]
     age_2 <- age[min(which(pmatage==1))]  
       
-    len_1 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_1)*length_sc
-    len_2 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_2)*length_sc
+    len_1 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_1)*length_sc
+    len_2 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_2)*length_sc
     
     age50 <- age_1+0.5*(age_2-age_1)
     age95 <- age_1+0.95*(age_2-age_1)
     
-    len50 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age50)*length_sc
-    len95 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age95)*length_sc
+    len50 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age50)*length_sc
+    len95 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age95)*length_sc
     
     age_pr <- seq(0,max(age),length=1000)
-    len_pr <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_pr)*length_sc
+    len_pr <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_pr)*length_sc
     pmat_pr <- approx(age,pmatage,xout = age_pr)$y
 
     }else{
     fit <- glm(pmatdata~age,family=binomial(link='logit'))
     age_pr <- seq(0,max(age),length=1000)
-    len_pr <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_pr)*length_sc
+    len_pr <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_pr)*length_sc
     pmat_pr <- predict(fit,type="response",newdata = data.frame(age=age_pr))
   
     age50 <- age_pr[which.min(abs(pmat_pr-0.50))] # age at 50% maturity
     age95 <- age_pr[which.min(abs(pmat_pr-0.95))] # age at 95% maturity
     
-    len50 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age50)*length_sc # length at 50% maturity
-    len95 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age95)*length_sc # length at 95% maturity
+    len50 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age50)*length_sc # length at 50% maturity
+    len95 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age95)*length_sc # length at 95% maturity
     }
     
     # par(mfrow=c(2,1))
@@ -391,6 +451,11 @@ for(rdat_name_i in bam_rdat_sub){
 
     return(list("L50"=len50,"L50_95"=len95-len50))
     })
+    L50_i <- mat_at_len_i$L50
+    A50_i <- vb_age(Linf_i,K_i,t0_i,L50_i)
+    
+    L50[Name_i] <- L50_i
+    A50[Name_i] <- A50_i
     
     slot(Stock_i,"L50") <- mat_at_len_i$L50*L_50_sc 
     slot(Stock_i,"L50_95") <- mat_at_len_i$L50_95*L50_95_sc
@@ -408,10 +473,114 @@ for(rdat_name_i in bam_rdat_sub){
 
 ```
 
-```{r compare Fleets}
+```{r modify Stock from Fishlife and Fishbase}
+
+# Names of columns to retain from fishbase growth data
+names.D.gro <- c("sciname","Sex","K","TLinfinity","to","tmax","M"
+                 #,"MRef","PopGrowthRef"
+                 )
+
+for(rdat_name_i in bam_rdat_sub[1]){
+  Stock_name_i <- gsub("rdat","Stock",rdat_name_i)
+  Stock_i <- get(Stock_name_i)
+  rdat_i <- get(rdat_name_i)
+
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  GenusSpecies_i <- Stock_otherValues[Name_i,"Species"]
+  genus_i <- unlist(str_extract_all(GenusSpecies_i,"^[A-Za-z]+"))
+  #unlist(str_extract_all(GenusSpecies_i," ([\\s\\S]*)$"))
+  species_i <- unlist(str_split(GenusSpecies_i," "))[2]
+  
+  # Get values from Fishbase
+  order_i <- D.taxa$Order[which(D.taxa$Genus==genus_i&D.taxa$Species==species_i)]
+  taxa_order_i <- as.data.frame(D.taxa[D.taxa$Order==order_i,])
+  sciname_order_i <- apply(taxa_order_i[,c("Genus","Species")],1,function(x){paste(x,collapse=" ")})
+  D.Gro_order_i <- D.Gro[which(D.Gro$sciname%in%sciname_order_i),names.D.gro]
+  
+  family_i <- D.taxa$Family[which(D.taxa$Genus==genus_i&D.taxa$Species==species_i)]
+  taxa_family_i <- as.data.frame(D.taxa[D.taxa$Family==family_i,])
+  sciname_family_i <- apply(taxa_family_i[,c("Genus","Species")],1,function(x){paste(x,collapse=" ")})
+  D.Gro_family_i <- D.Gro[which(D.Gro$sciname%in%sciname_family_i),names.D.gro]
+  
+  #info_i <- rdat_i$info
+  parms_i <- rdat_i$parms
+  parm.cons_i <- rdat_i$parm.cons
+  #a.series_i <- rdat_i$a.series
+
+   Linf_i <- parm.cons_i$Linf[1]*length_sc
+   K_i <- parm.cons_i$K[1]
+   t0_i <- parm.cons_i$t0[1]
+   M_i <- parm.cons_i$M_constant[1]
+   tmax_i <- Stock_otherValues[Name_i,"maxage"]
+   A50_i <- A50[[Name_i]]
+   rec_sigma_i <- parm.cons_i$rec_sigma[1]
+   rec_AC_i <- rec_AC[[Name_i]]
+   steep_i <- parm.cons_i$steep[1]
+   Fmsy_i <- parms_i$Fmsy
+   
+   # NOTE: The FishLife plots are a little funky because several plots
+   #       are in log space but plotted with log axes. So you have to transform
+   #       observed values to plot appropriately
+   params.obs_i <- c("K"=log(K_i),
+                     "M"=log(M_i), 
+                     "Loo"=log(Linf_i),
+                     "tmax"=log(tmax_i),
+                     "tm"=log(A50_i), 
+                     "ln_margsd"=log(rec_sigma_i),
+                     "rho"=rec_AC_i, 
+                     "logitbound_h"=steep_i,
+                     "ln_Fmsy"=log(Fmsy_i)
+                     )
+   
+  # Run FishLife code
+  taxa_i <- Search_species(Genus=genus_i,Species=species_i)$match_taxonomy
+  Predict_i  <- Plot_taxa_NK(taxa_i,params.obs=params.obs_i,mfrow=c(3,2))
+  Cov_pred_i <- Predict_i[[1]]$Cov_pred # Predictions from FishLife
+  Mean_pred_i <- Predict_i[[1]]$Mean_pred # Predictions from FishLife
+  
+  ### Use FishLife values..
+  
+  ## .. for select missing values
+  # rec_AC(e.g. for BluelineTilefish)
+  rec_AC_i <- rec_AC[Name_i]
+  if(is.na(rec_AC_i)){rec_AC_i <- rec_AC[Name_i] <- Mean_pred_i[["rho"]]}
+  slot(Stock_i,"AC") <- round(rec_AC_i*rec_AC_sc,3) # Upper and lower limits
+
+  ## ..to generate correlated parameters   
+   # Generate correlated parameters
+   par_mu_i <- c(Linf=Linf_i, K=K_i, M=M_i)
+   
+   # These values come out way too large to apply to individual stocks
+   #par_sd <- apply(D.Gro_family_i[,c("TLinfinity","K","to","M")],2,function(x){sd(x,na.rm=TRUE)})
+  par_sd_i <- par_mu_i*par_cv
+   
+  # Get initial correlation matrix from fishbase family level data
+  #cormatrix_i <- cor(D.Gro_order_i[,c("TLinfinity","K","to","M")],use="pairwise.complete.obs")
+  #cormatrix_i <- cor(D.Gro_family_i[,c("TLinfinity","K","to","M")],use="pairwise.complete.obs") 
+  # covmatrix_i <- cov(D.Gro_family_i[,c("TLinfinity","K","to","M")],use="pairwise.complete.obs") 
+  # 
+  # par_cov_i <- covmatrix_i
+
+  # Replace par covariance values from Fishbase at the family level with better predictions from FishLife
+  par_cov_i <- Cov_pred_i[c("Loo","K","M"),c("Loo","K","M")]
+  dimnames(par_cov_i) <- list(c("Linf", "K", "M"),c("Linf", "K", "M"))
+  par_cor_i <- cov2cor(par_cov_i)
+  
+   par_pred_i <- rnorm_multi(
+     n = OM_i@nsim,
+     mu = par_mu_i,
+     sd = par_sd_i,
+     r = as.numeric(par_cor_i),
+     varnames = c("Linf", "K","M"),
+     empirical = FALSE)
+}  
+
+```
+
+```{r compare Fleets, eval=FALSE}
 # Just some simple code to let you look at how items have been defined in various Fleet objects
 Fleet_avail <- avail("Fleet")
-Fleet_avail <- Fleet_avail[!grepl("_OM",Fleet_avail)]
+Fleet_avail <- Fleet_avail[!grepl("OM_",Fleet_avail)]
 Fleet_preview <- list()
 
 for(Fleet_name_i in Fleet_avail){
@@ -444,6 +613,7 @@ for(rdat_name_i in bam_rdat_sub){
   parms_i <- rdat_i$parms
   parm.cons_i <- rdat_i$parm.cons
   years_i <- paste(parms_i$styr:parms_i$endyr)
+  nyears_i <- length(years_i)
   t.series_i <- rdat_i$t.series[years_i,]
   
   Name_i <- gsub("rdat_","",rdat_name_i)
@@ -469,12 +639,16 @@ for(rdat_name_i in bam_rdat_sub){
   
   # Set slot values
    slot(Fleet_i,"Name") <- Name_i
+   slot(Fleet_i,"nyears") <- nyears_i
    slot(Fleet_i,"Spat_targ") <- Spat_targ
-   slot(Fleet_i,"Esd") <- Esd
   
    slot(Fleet_i,"EffYears") <- as.numeric(years_i)
    slot(Fleet_i,"EffLower") <- E_i*Eff_sc[1]
    slot(Fleet_i,"EffUpper") <- E_i*Eff_sc[2]
+   slot(Fleet_i,"Esd") <- Esd
+   
+   slot(Fleet_i,"qinc") <- qinc
+   slot(Fleet_i,"qcv") <- qcv
    
   # Estimate length at 5% and full (100%) selection
    sel_at_len_i <- local({
@@ -493,11 +667,11 @@ for(rdat_name_i in bam_rdat_sub){
    Linf_i <- parm.cons_i$Linf[1]
    K_i <- parm.cons_i$K[1]
    t0_i <- parm.cons_i$t0[1]
-   lenage <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age)*length_sc
-   len_pr <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=age_pr)*length_sc
+   lenage <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age)*length_sc
+   len_pr <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_pr)*length_sc
    
-   lensel_05 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=agesel_05)*length_sc # Length at 5% selection
-   lensel_100 <- vb_len(Linf=Linf_i, k=K_i, t0=t0_i, a=agesel_100)*length_sc # Length at 100% selection
+   lensel_05 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=agesel_05)*length_sc # Length at 5% selection
+   lensel_100 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=agesel_100)*length_sc # Length at 100% selection
    
    # par(mfrow=c(2,1))
    # plot(age,selage,pch=16,main=Name_i)
@@ -529,10 +703,10 @@ for(rdat_name_i in bam_rdat_sub){
 }
 ```
 
-```{r compare Obs}
+```{r compare Obs, eval=FALSE}
 # Just some simple code to let you look at how items have been defined in various Obs objects
 Obs_avail <- avail("Obs")
-Obs_avail <- Obs_avail[!grepl("_OM",Obs_avail)]
+Obs_avail <- Obs_avail[!grepl("OM_",Obs_avail)]
 Obs_preview <- list()
 
 for(Obs_name_i in Obs_avail){
@@ -577,10 +751,10 @@ for(rdat_name_i in bam_rdat_sub){
 }
 ```
 
-```{r compare Imp}
+```{r compare Imp, eval=FALSE}
 # Just some simple code to let you look at how items have been defined in various Imp objects
 Imp_avail <- avail("Imp")
-Imp_avail <- Imp_avail[!grepl("_OM",Imp_avail)]
+Imp_avail <- Imp_avail[!grepl("OM_",Imp_avail)]
 Imp_preview <- list()
 
 for(Imp_name_i in Imp_avail){
@@ -614,6 +788,34 @@ for(rdat_name_i in bam_rdat_sub){
 }
 ```
 
+```{r assemble OM}
+for(rdat_name_i in bam_rdat_sub){
+  OM_name_i <- gsub("rdat","OM",rdat_name_i)
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  
+  Stock_i <- get(paste0("Stock_",Name_i))
+  Fleet_i <- get(paste0("Fleet_",Name_i))
+  Obs_i <- get(paste0("Obs_",Name_i))
+  Imp_i <- get(paste0("Imp_",Name_i))
+  OM_i <- new("OM", Stock_i, Fleet_i, Obs_i, Imp_i)
+  
+  # Fill OM slots
+  slot(OM_i,"Agency") <- Agency
+  slot(OM_i,"Region") <- Region
+  slot(OM_i,"Sponsor") <- Sponsor
+  slot(OM_i,"Latitude") <- Latitude
+  slot(OM_i,"Longitude") <- Longitude
+  slot(OM_i,"nsim") <- nsim
+  slot(OM_i,"proyears") <- proyears
+  slot(OM_i,"interval") <- interval
+  slot(OM_i,"pstar") <- pstar
+  slot(OM_i,"reps") <- reps
+  
+  assign(OM_name_i,OM_i)
+}
+  rm("OM_i")
+```
+
 ```{r add cpars}
 # NOTE: There are good reasons to add values to the OM with cpars. See text below.
 
@@ -628,23 +830,105 @@ for(rdat_name_i in bam_rdat_sub){
 # values to internal parameters using the cpars slot. For example, time-varying natural
 # mortality or selectivity patterns. These are referred to as internal custom
 # parameters."
+
+# # Names of columns to retain from fishbase growth data
+# names.D.gro <- c("sciname","Sex","K","TLinfinity","to","tmax","M"
+#                  #,"MRef","PopGrowthRef"
+#                  )
+# 
+# for(rdat_name_i in bam_rdat_sub){
+#   OM_name_i <- gsub("rdat","OM",rdat_name_i)
+#   OM_i <- get(OM_name_i)
+#   
+#   rdat_i <- get(rdat_name_i)
+#   
+#   Name_i <- gsub("rdat_","",rdat_name_i)
+#   GenusSpecies_i <- Stock_otherValues[Name_i,"Species"]
+#   genus_i <- unlist(str_extract_all(GenusSpecies_i,"^[A-Za-z]+"))
+#   species_i <- unlist(str_extract_all(GenusSpecies_i,"[A-Za-z]+$"))
+#   
+#   # Get values from Fishbase
+#   family_i <- D.taxa$Family[which(D.taxa$Genus==genus_i&D.taxa$Species==species_i)]
+#   taxa_family_i <- as.data.frame(D.taxa[D.taxa$Family==family_i,])
+#   sciname_family_i <- apply(taxa_family_i[,c("Genus","Species")],1,function(x){paste(x,collapse=" ")})
+#   D.Gro_family_i <- D.Gro[which(D.Gro$sciname%in%sciname_family_i),names.D.gro]
+#   
+#   # Get initial correlation matrix from fishbase family level data
+#   cormatrix_i <- cor(D.Gro_family_i[,c("TLinfinity","K","to","M")],use="pairwise.complete.obs")
+#   
+#   #info_i <- rdat_i$info
+#   parms_i <- rdat_i$parms
+#   parm.cons_i <- rdat_i$parm.cons
+#   #a.series_i <- rdat_i$a.series
+# 
+#    Linf_i <- parm.cons_i$Linf[1]*length_sc
+#    K_i <- parm.cons_i$K[1]
+#    t0_i <- parm.cons_i$t0[1]
+#    M_i <- parm.cons_i$M_constant[1]
+#    tmax_i <- Stock_otherValues[Name_i,"maxage"]
+#    A50_i <- A50[[Name_i]]
+#    rec_sigma_i <- parm.cons_i$rec_sigma[1]
+#    rec_AC_i <- rec_AC[[Name_i]]
+#    steep_i <- parm.cons_i$steep[1]
+#    Fmsy_i <- parms_i$Fmsy
+#    
+#    # NOTE: The FishLife plots are a little funky because several plots
+#    #       are in log space but plotted with log axes. So you have to transform
+#    #       observed values to plot appropriately
+#    params.obs_i <- c("K"=log(K_i),
+#                      "M"=log(M_i), 
+#                      "Loo"=log(Linf_i),
+#                      "tmax"=log(tmax_i),
+#                      "tm"=log(A50_i), 
+#                      "ln_margsd"=log(rec_sigma_i),
+#                      "rho"=rec_AC_i, 
+#                      "logitbound_h"=steep_i,
+#                      "ln_Fmsy"=log(Fmsy_i)
+#                      )
+#    
+#   # Run FishLife code
+#   taxa_i <- Search_species(Genus=genus_i,Species=species_i)$match_taxonomy
+#   Predict_i  <- Plot_taxa_NK(taxa_i,params.obs=params.obs_i,mfrow=c(3,2))
+#   Mean_pred_i <- Predict_i[[1]]$Mean_pred # Predictions from FishLife
+#   
+#   # fill in A50_i values if missing (e.g. for BluelineTilefish)
+#   if(is.na(A50_i)){A50_i <- Mean_pred_i[["rho"]]}
+# 
+#    
+#    # Generate correlated VB parameters
+#    VBpar_mu <- c(Linf=Linf_i, K=K_i, t0=t0_i)
+# 
+#    
+#    # D.Gro$sciname[grep("Lutjanus",D.Gro$sciname)]
+#    
+#    VBcv <-     c(Linf=0.1, K=0.1, t0=0.1)
+#    # VBpar_cor <- rnorm_multi(
+#    #   n = OM_i@nsim, 
+#    #   mu = c(Linf=Linf_i, K=K_i, t0=t0_i),
+#    #   sd = c(1, 5, 5),
+#    #   r = c( 1,   0.2, -0.5, 
+#    #          0.2, 1,    0.5, 
+#    #         -0.5, 0.5,  1), 
+#    #   varnames = c("Linf", "K", "t0"),
+#    #   empirical = FALSE)
+#    # 
+#   
+# }
+
 ```
 
-```{r assemble OM}
-for(rdat_name_i in bam_rdat_sub){
-  OM_name_i <- gsub("rdat","OM",rdat_name_i)
-  Name_i <- gsub("rdat_","",rdat_name_i)
-  # assign(OM_name_i,OM_init)
-  Stock_i <- get(paste0("Stock_",Name_i))
-  Fleet_i <- get(paste0("Fleet_",Name_i))
-  Obs_i <- get(paste0("Obs_",Name_i))
-  Imp_i <- get(paste0("Imp_",Name_i))
-  OM_i <- new("OM", Stock_i, Fleet_i, Obs_i, Imp_i)
-  
-  assign(OM_name_i,OM_i)
-  rm("OM_i")
+```{r plot OM}
+if(plot_OM){
+OMToPlot <- local({
+  a <- avail("OM")
+  a[!a%in%c("testOM","OM_i")]
+})
+for(OM_name_i in OMToPlot){
+  pdf(file.path("fig/OM",paste0(OM_name_i,".pdf")),width = 12,height = 8)
+  OM_i <- get(OM_name_i)
+  plot(OM_i)
+  dev.off()
 }
-
-# myOM <- new("OM", Rockfish, Generic_Fleet, Generic_Obs, Perfect_Imp)
+}
 ```
 
