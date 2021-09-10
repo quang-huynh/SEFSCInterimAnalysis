@@ -12,7 +12,7 @@ knitr::opts_chunk$set(comment=NA,echo=FALSE,message=FALSE,warning=FALSE,fig.heig
 
 library(car)
 library(DLMtool)
-# library(faux) # Simulation for Factorial Designs
+library(faux) # Simulation for Factorial Designs
 # devtools::install_github("james-thorson/FishLife")
 library(FishLife)
 library(MSEtool)
@@ -28,7 +28,7 @@ source("Plot_taxa_NK.R")
 
 ```{r user}
 length_sc <- .1 # Scalar (multiplier) to convert length units. MSEtool examples seem to use cm whereas BAM uses mm.
-plot_OM <- FALSE # Switch for plotting OM. It takes a while to plot them all
+plot_OM <- TRUE # Switch for plotting OM. It takes a while to plot them all
 
 ```
 
@@ -100,7 +100,7 @@ AC_default <- NA#c(0.2)
 # par_cv: When generating parameters for Stock objects, mean values are observed from rdat.
 #         Coefficient of variation (CV) values are set to compute the standard deviation of
 #         a normal distribution from which to sample parameter values
-par_cv <- c("TLinfinity"=0.2,"K"=0.2,"M"=0.2)
+par_cv <- c("TLinfinity"=0.1,"K"=0.1,"M"=0.1)
 ```
 
 ```{r user Fleet}
@@ -309,7 +309,7 @@ names(Stock_preview) <- Stock_avail
 Stock_init <- new('Stock')
 
 # Initialize objects for saving computed values
-rec_AC <- A50 <- L50 <- setNames(rep(NA,length(bam_common_name_sub)),bam_common_name_sub)
+dep <- rec_AC <- A50 <- L50 <- setNames(rep(NA,length(bam_common_name_sub)),bam_common_name_sub)
 
 for(rdat_name_i in bam_rdat_sub){
   Stock_name_i <- gsub("rdat","Stock",rdat_name_i)
@@ -464,6 +464,8 @@ for(rdat_name_i in bam_rdat_sub){
     SSBend_i <- parms_i$SSBmsy*parms_i$SSBend.SSBmsy
     D_i <- SSBend_i/parms_i$SSB0
     
+    dep[Name_i] <- D_i # Depletion
+    
     slot(Stock_i,"D") <- D_i*D_sc
     
     slot(Stock_i,"Source") <- paste0(paste(unlist(info_i[c("species","title","date")]),collapse = "; "),"; rdat file")
@@ -480,7 +482,7 @@ names.D.gro <- c("sciname","Sex","K","TLinfinity","to","tmax","M"
                  #,"MRef","PopGrowthRef"
                  )
 
-for(rdat_name_i in bam_rdat_sub[1]){
+for(rdat_name_i in bam_rdat_sub){
   Stock_name_i <- gsub("rdat","Stock",rdat_name_i)
   Stock_i <- get(Stock_name_i)
   rdat_i <- get(rdat_name_i)
@@ -534,7 +536,11 @@ for(rdat_name_i in bam_rdat_sub[1]){
    
   # Run FishLife code
   taxa_i <- Search_species(Genus=genus_i,Species=species_i)$match_taxonomy
+  
+  pdf(paste0("fig/FishLife/",Name_i,".pdf"))
   Predict_i  <- Plot_taxa_NK(taxa_i,params.obs=params.obs_i,mfrow=c(3,2))
+  dev.off()
+  
   Cov_pred_i <- Predict_i[[1]]$Cov_pred # Predictions from FishLife
   Mean_pred_i <- Predict_i[[1]]$Mean_pred # Predictions from FishLife
   
@@ -545,14 +551,15 @@ for(rdat_name_i in bam_rdat_sub[1]){
   rec_AC_i <- rec_AC[Name_i]
   if(is.na(rec_AC_i)){rec_AC_i <- rec_AC[Name_i] <- Mean_pred_i[["rho"]]}
   slot(Stock_i,"AC") <- round(rec_AC_i*rec_AC_sc,3) # Upper and lower limits
-
+  assign(Stock_name_i,Stock_i)
   ## ..to generate correlated parameters   
    # Generate correlated parameters
    par_mu_i <- c(Linf=Linf_i, K=K_i, M=M_i)
    
    # These values come out way too large to apply to individual stocks
-   #par_sd <- apply(D.Gro_family_i[,c("TLinfinity","K","to","M")],2,function(x){sd(x,na.rm=TRUE)})
-  par_sd_i <- par_mu_i*par_cv
+   #par_sd_i <- apply(D.Gro_family_i[,c("TLinfinity","K","to","M")],2,function(x){sd(x,na.rm=TRUE)})
+   
+   par_sd_i <- par_mu_i*par_cv
    
   # Get initial correlation matrix from fishbase family level data
   #cormatrix_i <- cor(D.Gro_order_i[,c("TLinfinity","K","to","M")],use="pairwise.complete.obs")
@@ -567,14 +574,18 @@ for(rdat_name_i in bam_rdat_sub[1]){
   par_cor_i <- cov2cor(par_cov_i)
   
    par_pred_i <- rnorm_multi(
-     n = OM_i@nsim,
+     n = nsim,
      mu = par_mu_i,
      sd = par_sd_i,
      r = as.numeric(par_cor_i),
      varnames = c("Linf", "K","M"),
      empirical = FALSE)
+   
+   cpars_i <- as.list(par_pred_i)
+   cpars_i$D <- rep(dep[[Name_i]],nsim)
+   assign(paste0("cpars_",Name_i),cpars_i)
 }  
-
+rm(cpars_i)
 ```
 
 ```{r compare Fleets, eval=FALSE}
@@ -789,6 +800,8 @@ for(rdat_name_i in bam_rdat_sub){
 ```
 
 ```{r assemble OM}
+OM_name_bam <- gsub("rdat","OM",bam_rdat_sub) # OM names from bam models
+
 for(rdat_name_i in bam_rdat_sub){
   OM_name_i <- gsub("rdat","OM",rdat_name_i)
   Name_i <- gsub("rdat_","",rdat_name_i)
@@ -831,93 +844,23 @@ for(rdat_name_i in bam_rdat_sub){
 # mortality or selectivity patterns. These are referred to as internal custom
 # parameters."
 
-# # Names of columns to retain from fishbase growth data
-# names.D.gro <- c("sciname","Sex","K","TLinfinity","to","tmax","M"
-#                  #,"MRef","PopGrowthRef"
-#                  )
-# 
-# for(rdat_name_i in bam_rdat_sub){
-#   OM_name_i <- gsub("rdat","OM",rdat_name_i)
-#   OM_i <- get(OM_name_i)
-#   
-#   rdat_i <- get(rdat_name_i)
-#   
-#   Name_i <- gsub("rdat_","",rdat_name_i)
-#   GenusSpecies_i <- Stock_otherValues[Name_i,"Species"]
-#   genus_i <- unlist(str_extract_all(GenusSpecies_i,"^[A-Za-z]+"))
-#   species_i <- unlist(str_extract_all(GenusSpecies_i,"[A-Za-z]+$"))
-#   
-#   # Get values from Fishbase
-#   family_i <- D.taxa$Family[which(D.taxa$Genus==genus_i&D.taxa$Species==species_i)]
-#   taxa_family_i <- as.data.frame(D.taxa[D.taxa$Family==family_i,])
-#   sciname_family_i <- apply(taxa_family_i[,c("Genus","Species")],1,function(x){paste(x,collapse=" ")})
-#   D.Gro_family_i <- D.Gro[which(D.Gro$sciname%in%sciname_family_i),names.D.gro]
-#   
-#   # Get initial correlation matrix from fishbase family level data
-#   cormatrix_i <- cor(D.Gro_family_i[,c("TLinfinity","K","to","M")],use="pairwise.complete.obs")
-#   
-#   #info_i <- rdat_i$info
-#   parms_i <- rdat_i$parms
-#   parm.cons_i <- rdat_i$parm.cons
-#   #a.series_i <- rdat_i$a.series
-# 
-#    Linf_i <- parm.cons_i$Linf[1]*length_sc
-#    K_i <- parm.cons_i$K[1]
-#    t0_i <- parm.cons_i$t0[1]
-#    M_i <- parm.cons_i$M_constant[1]
-#    tmax_i <- Stock_otherValues[Name_i,"maxage"]
-#    A50_i <- A50[[Name_i]]
-#    rec_sigma_i <- parm.cons_i$rec_sigma[1]
-#    rec_AC_i <- rec_AC[[Name_i]]
-#    steep_i <- parm.cons_i$steep[1]
-#    Fmsy_i <- parms_i$Fmsy
-#    
-#    # NOTE: The FishLife plots are a little funky because several plots
-#    #       are in log space but plotted with log axes. So you have to transform
-#    #       observed values to plot appropriately
-#    params.obs_i <- c("K"=log(K_i),
-#                      "M"=log(M_i), 
-#                      "Loo"=log(Linf_i),
-#                      "tmax"=log(tmax_i),
-#                      "tm"=log(A50_i), 
-#                      "ln_margsd"=log(rec_sigma_i),
-#                      "rho"=rec_AC_i, 
-#                      "logitbound_h"=steep_i,
-#                      "ln_Fmsy"=log(Fmsy_i)
-#                      )
-#    
-#   # Run FishLife code
-#   taxa_i <- Search_species(Genus=genus_i,Species=species_i)$match_taxonomy
-#   Predict_i  <- Plot_taxa_NK(taxa_i,params.obs=params.obs_i,mfrow=c(3,2))
-#   Mean_pred_i <- Predict_i[[1]]$Mean_pred # Predictions from FishLife
-#   
-#   # fill in A50_i values if missing (e.g. for BluelineTilefish)
-#   if(is.na(A50_i)){A50_i <- Mean_pred_i[["rho"]]}
-# 
-#    
-#    # Generate correlated VB parameters
-#    VBpar_mu <- c(Linf=Linf_i, K=K_i, t0=t0_i)
-# 
-#    
-#    # D.Gro$sciname[grep("Lutjanus",D.Gro$sciname)]
-#    
-#    VBcv <-     c(Linf=0.1, K=0.1, t0=0.1)
-#    # VBpar_cor <- rnorm_multi(
-#    #   n = OM_i@nsim, 
-#    #   mu = c(Linf=Linf_i, K=K_i, t0=t0_i),
-#    #   sd = c(1, 5, 5),
-#    #   r = c( 1,   0.2, -0.5, 
-#    #          0.2, 1,    0.5, 
-#    #         -0.5, 0.5,  1), 
-#    #   varnames = c("Linf", "K", "t0"),
-#    #   empirical = FALSE)
-#    # 
-#   
-# }
+for(rdat_name_i in bam_rdat_sub){
+  OM_name_i <- gsub("rdat","OM",rdat_name_i)
+  OM_i <- get(OM_name_i)
+
+  # rdat_i <- get(rdat_name_i)
+
+  Name_i <- gsub("rdat_","",rdat_name_i)
+  cpars_i <- get(paste0("cpars_",Name_i))
+  OM_i@cpars <- cpars_i
+  assign(OM_name_i,OM_i)
+  
+  plot(as.data.frame(cpars_i),main=Name_i)
+}
 
 ```
 
-```{r plot OM}
+```{r plot and save OM}
 if(plot_OM){
 OMToPlot <- local({
   a <- avail("OM")
@@ -928,6 +871,11 @@ for(OM_name_i in OMToPlot){
   OM_i <- get(OM_name_i)
   plot(OM_i)
   dev.off()
+  
+  if(OM_name_i%in%OM_name_bam){
+  saveRDS(OM_i,file=file.path("OM","SEFSC",paste0(OM_name_i,".rds")),compress=FALSE)
+  }          
+  
 }
 }
 ```
