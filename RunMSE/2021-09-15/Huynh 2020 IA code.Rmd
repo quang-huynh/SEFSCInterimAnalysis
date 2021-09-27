@@ -1,0 +1,643 @@
+---
+title: "Huynh 2020 Interim Analysis Code"
+author: "Nikolai Klibansky"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    fig_caption: yes
+    extra_dependencies:
+      longtable: null
+      xcolor: null
+urlcolor: blue
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(comment=NA,echo=FALSE,message=FALSE,warning=FALSE,fig.height=8,fig.width=6)
+
+library(Hmisc)
+library(knitr)
+library(latex2exp) # lets you use TeX() function to convert latex equations to R expressions for plotting
+library(stringr)
+```
+
+```{r functions}
+# coefficient of variation
+CV <- function(x,na.rm=TRUE){
+  sd(x,na.rm=na.rm)/mean(x,na.rm=na.rm)
+}
+
+# geometric mean 
+# Note that this will fail when x is a large value. exp(mean(log(x))) works better but can't handle negative values
+GM <- function(x,na.rm=TRUE){
+  if(na.rm){x <- as.numeric(na.omit(x))}
+    prod(x)^(1/length(x))
+    }
+  
+
+VB.L <- function(Linf,K,t0,a,ageProp=0)  {Linf*(1-exp(-K*(a+ageProp-t0))) }   # VB age to L
+
+mat_L50_L95 <- function(L,L50,L95){
+  r <- log((1-0.95)/0.95)/(L50-L95)
+  P <- 1/(1+exp(-r*(L-L50)))
+  return(P)
+}
+
+```
+
+```{r data}
+# Read in data for operating models
+for(file.i in list.files("OM")){
+  assign(gsub(".rds","",file.i),readRDS(file.path("OM",file.i)))
+}
+
+OM_Names <- gsub(".rds","",list.files("OM"))
+speciesNames <- gsub("OM_","",OM_Names)
+
+OM_nsim <- c()
+for(OM_Name_i in OM_Names){
+  i <- which(OM_Names==OM_Name_i)
+  OM_i <- get(OM_Name_i)
+  nsim_i <- OM_i@nsim
+  OM_nsim <- c(OM_nsim,nsim_i)
+}
+
+nsim_text <- combine_words(unique(OM_nsim),and=" or ")
+
+# Read in results
+for(file.i in list.files("MSE_obj")){
+  assign(paste(gsub(".rds","",file.i),"out",sep="_"),readRDS(file.path("MSE_obj",file.i)))
+}
+
+```
+
+
+```{r plot data, fig.cap=paste0("\\label{fig:lifeHist} Life history (growth and maturity) and vulnerability schedules at age used in the operating models for ",combine_words(speciesNames),". Growth is expressed as mean length-at-age relative to that at the maximum age. Compare with Huynh et al (2020) Figure 1.")}
+# Figure 1 from Huynh et al (2020)
+
+plot_LH <- function(OM,...){
+maxage <- OM@maxage
+agebins <- 1:maxage
+lenbins <- VB.L(Linf=OM@Linf[1],K=OM@K[1],t0=OM@t0[1],a=agebins)
+Plenbins <- lenbins/max(lenbins)
+Mat_age <- OM@cpars$Mat_age[1,,1] # Maturity at age
+V <- OM@cpars$V[1,,1] # Vulnerability (selectivity) at age
+
+plot(agebins,Plenbins,ylim=c(0,1),type="l",lwd=3,...)
+points(agebins,Mat_age,type="l",lwd=3,lty=2)
+points(agebins,V,type="l",lwd=3,lty=3)
+}
+
+par(mfrow=c(length(OM_Names),1),mgp=c(1,0.2,0),mar=c(1.5,2,1.5,1),oma=c(1,2,1,1),tck=-0.01)
+for(OM_Name_i in OM_Names){
+i <- which(OM_Names==OM_Name_i)  
+OM_i <- get(OM_Name_i)
+speciesName_i <- gsub("OM_","",OM_Name_i)
+plot_LH(OM_i,xlab="",ylab="",main=speciesName_i)
+if(i==1){
+  legend("bottomright",legend=c("Rel. length","Maturity","Vulnerability"),lwd=c(3,3,3),lty=c(1,2,3),bty="n")
+}
+if(i==length(OM_Names)){
+  mtext("Value",2,0,outer = TRUE)
+}
+}
+```
+
+```{r plot results setup}
+scenNames <- c("base","hs","hd","dep","lf","epiM")
+MPNamesSub <- c("SCA_10","SCA_1","iMP_avg_10","iMP_buffer_10")
+MPNamesSub_legtext <- c("Fixed\nTAC (10)", "Annual\nassessment","Averaged\nIndex (10)", "Buffered\nIndex (10)")
+MSEoutNames <- paste(rep(OM_Names,each=length(scenNames)),
+                     rep(scenNames,length(OM_Names)),
+                     "out",
+                     sep="_")
+colLabs <- speciesNames
+rowLabs <- c("Base","Hyper-stable","Hyper-deplete","Depleted","Lightly fished","Episodic M")
+
+xlim <- c(0,50)
+cols <- setNames(c("red","black","deepskyblue2","deepskyblue2"),MPNamesSub)
+ltys <- setNames(c(1,1,1,2),MPNamesSub)
+lwds <- setNames(c(3,3,3,3),MPNamesSub)
+types <- setNames(c("l","l","l","l"),MPNamesSub)
+colLabsAll <- as.character(matrix(c(colLabs,rep("",length(MSEoutNames)-length(colLabs))),ncol=length(colLabs),byrow=TRUE))
+rowLabsAll <- as.character(matrix(c(rep("",length(MSEoutNames)-length(rowLabs)),rowLabs),nrow=length(rowLabs),byrow=FALSE))
+```
+
+```{r plot Figure 2, fig.cap=paste0("\\label{fig:ssbssbmsyFourMP} Annual mean $\\mathrm{B^S/B_{MSY}^S}$ from ",nsim_text," simulations for each species (columns) and scenario (rows). Coloured lines correspond to the four MPs. Note that $\\mathrm{B^S=SSB}$. Compare with Huynh et al (2020) Figure 2.")}
+# Figure 2: Mean BS/BSmsy
+myvarName <- "SSB"
+ylabel <- expression(Mean~~B^S/B[MSY]^S)
+ylim <- c(0,2)
+assessmentYears <- seq(10,40,by=10)
+x.at <- c(0,25,50)
+y.at <- c(0,1,2)
+
+layout(matrix(c(1:6,19,7:12,19,13:18,19), ncol=3, byrow=FALSE), heights=c(rep(1,6),0.75))
+par(mgp=c(1,0.2,0),mar=c(0,0,0,0),oma=c(1,4,3,3),tck=-0.01,xpd=TRUE,xaxs="i",yaxs="i")
+
+for(outName_i in MSEoutNames){
+topPanels <- (length(scenNames)*(seq_along(OM_Names)-1)+1)
+bottomPanels <- length(scenNames)*seq_along(OM_Names)
+leftPanels <- seq_along(scenNames)
+rightPanels <- tail(seq_along(MSEoutNames),length(scenNames))
+  
+i <- which(MSEoutNames==outName_i)
+out_i <- get(outName_i)
+MPNames <- out_i@MPs
+myvar <- slot(out_i,myvarName)
+SSBMSY <- slot(out_i,"OM")$SSBMSY
+
+myvar <- myvar/SSBMSY # Scale myvar (catch by SSBMSY)
+
+myvarsub <- myvar[,match(MPNamesSub,MPNames),]
+myvarsubMeans <- apply(myvarsub,2,function(x){apply(x,2,mean)})
+dimnames(myvarsubMeans) <- list(1:nrow(myvarsubMeans),MPNamesSub)
+
+xaxt_i <- ifelse(i%in%bottomPanels,"n","n")
+yaxt_i <- ifelse(i%in%leftPanels,"n","n")
+
+matplot(rownames(myvarsubMeans),myvarsubMeans,
+        col=cols,lty=ltys,lwd=lwds,type=types,
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+title(main=colLabsAll[i],line=1)
+# grid(col="black")
+points(par("usr")[1:2],c(1,1),type="l",lty="1111",lwd=1)
+abline(v=assessmentYears,lty="1111",lwd=1)
+if(i%in%topPanels){
+col.ct <- which(topPanels==i)
+mtext(colLabsAll[i],side=3,line=1,outer=TRUE,adj=c(0.15,0.5,0.97)[col.ct],font=2)
+}
+if(i%in%bottomPanels){
+x.at.i <- x.at
+if(i>bottomPanels[1]){x.at.i <- x.at[-1]}
+axis(side=1,at=x.at.i)
+}
+if(i%in%leftPanels){
+y.at.i <- y.at
+if(i>leftPanels[1]){y.at.i <- y.at[1:(length(y.at)-1)]}
+axis(side=2,at=y.at.i)
+}
+if(i%in%rightPanels){
+row.ct <- which(rightPanels==i)
+rowcenter <-par("usr")[3]+diff(par("usr")[3:4])/2
+
+text(x=par("usr")[2]*1.05,y=rowcenter,rowLabsAll[i],
+     srt=-90,xpd=NA,font=2)
+}
+}
+
+mtext(ylabel,side=2,line=1.5,outer=TRUE)
+mtext("Management year",side=1,line=1.5,outer=FALSE,adj=-4)
+plot.new()
+o <- c(2,3,4,1) # Order to plot legend elements
+legend("bottom",horiz=TRUE,bty="n",
+       legend=MPNamesSub_legtext[o],
+       col=cols[o],lty=ltys[o],lwd=lwds[o]
+       )
+```
+
+```{r plot Figure 3, fig.cap=paste0("\\label{fig:cmsyFourMP} Annual mean relative yield from ",nsim_text," simulations for each species (columns) and scenario (rows). Coloured lines correspond to the four MPs. Compare with Huynh et al (2020) Figure 3.")}
+# Figure 3: Mean relative yield
+myvarName <- "C"
+ylabel <- "Mean relative yield"
+ylim <- c(0,2)
+assessmentYears <- seq(10,40,by=10)
+x.at <- c(0,25,50)
+y.at <- c(0,1,2)
+
+layout(matrix(c(1:6,19,7:12,19,13:18,19), ncol=3, byrow=FALSE), heights=c(rep(1,6),0.75))
+par(mgp=c(1,0.2,0),mar=c(0,0,0,0),oma=c(1,4,3,3),tck=-0.025,xpd=TRUE,xaxs="i",yaxs="i")
+
+for(outName_i in MSEoutNames){
+topPanels <- (length(scenNames)*(seq_along(OM_Names)-1)+1)
+bottomPanels <- length(scenNames)*seq_along(OM_Names)
+leftPanels <- seq_along(scenNames)
+rightPanels <- tail(seq_along(MSEoutNames),length(scenNames))
+  
+i <- which(MSEoutNames==outName_i)
+out_i <- get(outName_i)
+MPNames <- out_i@MPs
+myvar <- slot(out_i,myvarName)
+MSY <- slot(out_i,"OM")$MSY
+
+myvar <- myvar/MSY # Scale myvar (catch by MSY)
+
+myvarsub <- myvar[,match(MPNamesSub,MPNames),]
+
+myvarsubMeans <- apply(myvarsub,2,function(x){apply(x,2,mean)})
+dimnames(myvarsubMeans) <- list(1:nrow(myvarsubMeans),MPNamesSub)
+
+xaxt_i <- ifelse(i%in%bottomPanels,"n","n")
+yaxt_i <- ifelse(i%in%leftPanels,"n","n")
+
+matplot(rownames(myvarsubMeans),myvarsubMeans,
+        col=cols,lty=ltys,lwd=lwds,type=types,
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+title(main=colLabsAll[i],line=1)
+# grid(col="black")
+points(par("usr")[1:2],c(1,1),type="l",lty="1111",lwd=1)
+abline(v=assessmentYears,lty="1111",lwd=1)
+if(i%in%topPanels){
+col.ct <- which(topPanels==i)
+mtext(colLabsAll[i],side=3,line=1,outer=TRUE,adj=c(0.15,0.5,0.97)[col.ct],font=2)
+}
+if(i%in%bottomPanels){
+x.at.i <- x.at
+if(i>bottomPanels[1]){x.at.i <- x.at[-1]}
+axis(side=1,at=x.at.i)
+}
+if(i%in%leftPanels){
+y.at.i <- y.at
+if(i>leftPanels[1]){y.at.i <- y.at[1:(length(y.at)-1)]}
+axis(side=2,at=y.at.i)
+}
+if(i%in%rightPanels){
+row.ct <- which(rightPanels==i)
+rowcenter <-par("usr")[3]+diff(par("usr")[3:4])/2
+text(x=par("usr")[2]*1.05,y=rowcenter,rowLabsAll[i],
+     srt=-90,xpd=NA,font=2)
+}
+
+}
+
+mtext(ylabel,side=2,line=1.5,outer=TRUE)
+mtext("Management year",side=1,line=1.5,outer=FALSE,adj=-4)
+plot.new()
+o <- c(2,3,4,1) # Order to plot legend elements
+legend("bottom",horiz=TRUE,bty="n",
+       legend=MPNamesSub_legtext[o],
+       col=cols[o],lty=ltys[o],lwd=lwds[o]
+       )
+```
+
+```{r plot Figure 4, fig.cap=paste0("\\label{fig:dotPlotCVB} Dot-and-whisker plots of CVB (coefficient of variation in spawning stock biomass) for each species (columns) and scenario (rows). For each MP, dots and numbers indicate the median from ",nsim_text," simulations, and whiskers span the interquartile range. Compare with Huynh et al (2020) Figure 4.")}
+scenNames <- c("base","hs","hd","dep","lf","epiM")
+MPNamesSub <- c("SCA_1","iMP_avg_10","iMP_buffer_10","SCA_10", "pMP_10",
+                        "iMP_avg_5", "iMP_buffer_5", "SCA_5",  "pMP_5")
+MPNamesSub_legtext <- c("Annual assessment","Averaged Index (10)", "Buffered Index (10)","Fixed TAC (10)", "Projection (10)",
+                                            "Averaged Index (5)",  "Buffered Index (5)", "Fixed TAC (5)",  "Projection (5)")
+MSEoutNames <- paste(rep(OM_Names,each=length(scenNames)),
+                     rep(scenNames,length(OM_Names)),
+                     "out",
+                     sep="_")
+colLabs <- speciesNames
+rowLabs <- c("Base","Hyper-stable","Hyper-deplete","Depleted","Lightly fished","Episodic M")
+
+xlim <- c(0,length(MPNamesSub)+1)
+ylim <- c(-.2,1)
+cols <- setNames(c("black",rep(rep(c("deepskyblue2","red"),each=2),2)),MPNamesSub)
+ltys <- setNames(c(1,rep(c(1,2),4)),MPNamesSub)
+lwds <- setNames(rep(1,length(MPNamesSub)),MPNamesSub)
+pchs <-  setNames(c(16,rep(c(16,21),4)),MPNamesSub)
+types <- setNames(rep("p",length(MPNamesSub)),MPNamesSub)
+colLabsAll <- as.character(matrix(c(colLabs,rep("",length(MSEoutNames)-length(colLabs))),ncol=length(colLabs),byrow=TRUE))
+rowLabsAll <- as.character(matrix(c(rep("",length(MSEoutNames)-length(rowLabs)),rowLabs),nrow=length(rowLabs),byrow=FALSE))
+
+myvarName <- "SSB"
+ylabel <- "CVB (actually it's the CV of SSB)"
+ylim <- c(0,1.25)
+y.at <- c(0,0.5,1)
+textlabpos <- c(rep("lo",6),rep("up",7),"lo",rep("up",4))
+
+layout(matrix(c(1:6,19,7:12,19,13:18,19), ncol=3, byrow=FALSE), heights=c(rep(1,6),0.75))
+par(mgp=c(1,0.2,0),mar=c(0,0,0,0),oma=c(4,3,3,3),tck=-0.01,xpd=TRUE,xaxs="i",yaxs="r",lend="butt")
+
+for(outName_i in MSEoutNames){
+topPanels <- (length(scenNames)*(seq_along(OM_Names)-1)+1)
+bottomPanels <- length(scenNames)*seq_along(OM_Names)
+leftPanels <- seq_along(scenNames)
+rightPanels <- tail(seq_along(MSEoutNames),length(scenNames))
+  
+i <- which(MSEoutNames==outName_i)
+out_i <- get(outName_i)
+MPNames <- out_i@MPs
+myvar <- slot(out_i,myvarName)
+
+myvarsub <- myvar[,match(MPNamesSub,MPNames),]
+myvarsubCVs <- apply(myvarsub,2,function(x){apply(x,1,CV)})
+dimnames(myvarsubCVs) <- list(1:nrow(myvarsubCVs),MPNamesSub)
+
+CVBmed <- apply(myvarsubCVs,2,median)
+CVBmedtext <- round(CVBmed,2)
+CVBQ1 <- apply(myvarsubCVs,2,quantile,probs=0.25)
+CVBQ3 <- apply(myvarsubCVs,2,quantile,probs=0.75)
+
+xaxt_i <- ifelse(i%in%bottomPanels,"n","n")
+yaxt_i <- ifelse(i%in%leftPanels,"n","n")
+x <- seq_along(MPNamesSub)
+plot(x,CVBmed,
+        col=cols,pch=pchs,type="n",bg="white",
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+arrows(x0=x,y0=CVBQ1,y1=CVBQ3,
+       col=cols,lty=ltys,lwd=lwds,length=0
+       )
+points(x,CVBmed,
+        col=cols,pch=pchs,type="p",bg="white",cex=1.2,
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+
+if(textlabpos[i]=="lo"){text(x=x,y=rep(par("usr")[3]),labels=CVBmedtext,srt=90,adj=c(-0.1,0.5),font=2)}
+if(textlabpos[i]=="up"){text(x=x,y=rep(par("usr")[4]),labels=CVBmedtext,srt=90,adj=c(1.2,0.5),font=2)}
+
+title(main=colLabsAll[i],line=1)
+abline(v=c(1.5,5.5),col="gray")
+# grid(col="black")
+
+if(i%in%topPanels){
+col.ct <- which(topPanels==i)
+mtext(colLabsAll[i],side=3,line=1,outer=TRUE,adj=c(0.15,0.5,0.97)[col.ct],font=2)
+}
+if(i%in%bottomPanels){
+axis(side=1,at=x,labels=MPNamesSub_legtext,las=2)
+}
+if(i%in%leftPanels){
+y.at.i <- y.at
+# if(i>leftPanels[1]){y.at.i <- y.at[1:(length(y.at)-1)]}
+axis(side=2,at=y.at.i)
+}
+if(i%in%rightPanels){
+row.ct <- which(rightPanels==i)
+rowcenter <-par("usr")[3]+diff(par("usr")[3:4])/2
+
+text(x=par("usr")[2]*1.05,y=rowcenter,rowLabsAll[i],
+     srt=-90,xpd=NA,font=2)
+}
+
+}
+
+mtext(ylabel,side=2,line=1.5,outer=TRUE)
+mtext("Management procedure",side=1,line=2.5,outer=TRUE)
+```
+
+```{r plot Figure 5, fig.cap=paste0("\\label{fig:dotPlotGMRY} Dot-and-whisker plots of GMRY (geometric mean of relative yield) for each species (columns) and scenario (rows). For each MP,dots and numbers indicate the median from ",nsim_text," simulations, and whiskers span the interquartile range. Dotted, horizontal lines indicate a value of 1. Compare with Huynh et al (2020) Figure 4.")}
+scenNames <- c("base","hs","hd","dep","lf","epiM")
+MPNamesSub <- c("SCA_1","iMP_avg_10","iMP_buffer_10","SCA_10", "pMP_10",
+                        "iMP_avg_5", "iMP_buffer_5", "SCA_5",  "pMP_5")
+MPNamesSub_legtext <- c("Annual assessment","Averaged Index (10)", "Buffered Index (10)","Fixed TAC (10)", "Projection (10)",
+                                            "Averaged Index (5)",  "Buffered Index (5)", "Fixed TAC (5)",  "Projection (5)")
+MSEoutNames <- paste(rep(OM_Names,each=length(scenNames)),
+                     rep(scenNames,length(OM_Names)),
+                     "out",
+                     sep="_")
+colLabs <- speciesNames
+rowLabs <- c("Base","Hyper-stable","Hyper-deplete","Depleted","Lightly fished","Episodic M")
+
+xlim <- c(0.25,length(MPNamesSub)+0.75)
+ylim <- c(0,1.25)
+cols <- setNames(c("black",rep(rep(c("deepskyblue2","red"),each=2),2)),MPNamesSub)
+ltys <- setNames(c(1,rep(c(1,2),4)),MPNamesSub)
+lwds <- setNames(rep(1,length(MPNamesSub)),MPNamesSub)
+pchs <-  setNames(c(16,rep(c(16,21),4)),MPNamesSub)
+types <- setNames(rep("p",length(MPNamesSub)),MPNamesSub)
+colLabsAll <- as.character(matrix(c(colLabs,rep("",length(MSEoutNames)-length(colLabs))),ncol=length(colLabs),byrow=TRUE))
+rowLabsAll <- as.character(matrix(c(rep("",length(MSEoutNames)-length(rowLabs)),rowLabs),nrow=length(rowLabs),byrow=FALSE))
+
+myvarName <- "C"
+ylabel <- "GMRY"
+y.at <- c(0.25,0.75)
+textlabpos <- c(rep("lo",6),rep("up",7),"lo",rep("up",4))
+
+layout(matrix(c(1:6,19,7:12,19,13:18,19), ncol=3, byrow=FALSE), heights=c(rep(1,6),0.75))
+par(mgp=c(1,0.2,0),mar=c(0,0,0,0),oma=c(4,3,3,3),tck=-0.01,xpd=TRUE,xaxs="i",yaxs="r",lend="butt")
+
+for(outName_i in MSEoutNames){
+topPanels <- (length(scenNames)*(seq_along(OM_Names)-1)+1)
+bottomPanels <- length(scenNames)*seq_along(OM_Names)
+leftPanels <- seq_along(scenNames)
+rightPanels <- tail(seq_along(MSEoutNames),length(scenNames))
+  
+i <- which(MSEoutNames==outName_i)
+out_i <- get(outName_i)
+MPNames <- out_i@MPs
+myvar <- slot(out_i,myvarName)
+MSY <- slot(out_i,"OM")$MSY
+
+myvar <- myvar/MSY # Scale myvar (catch by MSY)
+
+myvarsub <- myvar[,match(MPNamesSub,MPNames),]
+myvarsubGMs <- apply(myvarsub,2,function(x){apply(x,1,GM)})
+dimnames(myvarsubGMs) <- list(1:nrow(myvarsubGMs),MPNamesSub)
+
+GMBmed <- apply(myvarsubGMs,2,median)
+GMBmedtext <- round(GMBmed,2)
+GMBQ1 <- apply(myvarsubGMs,2,quantile,probs=0.25)
+GMBQ3 <- apply(myvarsubGMs,2,quantile,probs=0.75)
+
+xaxt_i <- ifelse(i%in%bottomPanels,"n","n")
+yaxt_i <- ifelse(i%in%leftPanels,"n","n")
+x <- seq_along(MPNamesSub)
+plot(x,GMBmed,
+        col=cols,pch=pchs,type="n",bg="white",
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+arrows(x0=x,y0=GMBQ1,y1=GMBQ3,
+       col=cols,lty=ltys,lwd=lwds,length=0
+       )
+points(x,GMBmed,
+        col=cols,pch=pchs,type="p",bg="white",cex=1.2,
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+text(x=x,y=rep(par("usr")[3]),labels=GMBmedtext,srt=90,adj=c(-0.1,0.5),font=2)
+title(main=colLabsAll[i],line=1)
+abline(v=c(1.5,5.5),col="gray")
+abline(h=1,lty=3)
+# grid(col="black")
+
+if(i%in%topPanels){
+col.ct <- which(topPanels==i)
+mtext(colLabsAll[i],side=3,line=1,outer=TRUE,adj=c(0.15,0.5,0.97)[col.ct],font=2)
+}
+if(i%in%bottomPanels){
+axis(side=1,at=x,labels=MPNamesSub_legtext,las=2)
+}
+if(i%in%leftPanels){
+y.at.i <- y.at
+# if(i>leftPanels[1]){y.at.i <- y.at[1:(length(y.at)-1)]}
+axis(side=2,at=y.at.i)
+}
+if(i%in%rightPanels){
+row.ct <- which(rightPanels==i)
+rowcenter <-par("usr")[3]+diff(par("usr")[3:4])/2
+
+text(x=par("usr")[2]*1.05,y=rowcenter,rowLabsAll[i],
+     srt=-90,xpd=NA,font=2)
+}
+
+}
+
+mtext(ylabel,side=2,line=1.5,outer=TRUE) # Add y label
+mtext("Management procedure",side=1,line=2.5,outer=TRUE)
+```
+
+```{r plot results setup2}
+# OM_Names <- unique(str_extract(list.files("MSE_obj"),"[a-zA-Z]+"))
+MPNamesSub <- c("iMP_avg_10","iMP_buffer_10","pMP_10")
+MPNamesSub_legtext <- c("Averaged\nIndex (10)", "Buffered\nIndex (10)","Projection (10)")
+MSEoutNames <- paste(rep(OM_Names,each=length(scenNames)),
+                     rep(scenNames,length(OM_Names)),
+                     "out",
+                     sep="_")
+colLabs <- speciesNames
+rowLabs <- c("Base","Hyper-stable","Hyper-deplete","Depleted","Lightly fished","Episodic M")
+
+xlim <- c(0,50)
+cols <- setNames(c("deepskyblue2","deepskyblue2","red"),MPNamesSub)
+ltys <- setNames(c(1,2,2),MPNamesSub)
+lwds <- setNames(c(3,3,3),MPNamesSub)
+types <- setNames(c("l","l","l"),MPNamesSub)
+colLabsAll <- as.character(matrix(c(colLabs,rep("",length(MSEoutNames)-length(colLabs))),ncol=length(colLabs),byrow=TRUE))
+rowLabsAll <- as.character(matrix(c(rep("",length(MSEoutNames)-length(rowLabs)),rowLabs),nrow=length(rowLabs),byrow=FALSE))
+```
+
+```{r plot Figure 6, fig.cap=paste0("\\label{fig:ssbssbmsyThreeMP} Annual mean $\\mathrm{B^S/B_{MSY}^S}$ from ",nsim_text," simulations for each species (columns) and scenario (rows) comparing the Averaged Index, Buffered Index and Projection MPs. Coloured lines correspond to the three MPs. Compare with Huynh et al (2020) Figure 6.")}
+# Figure 6: Mean SSB/SSBmsy
+myvarName <- "SSB"
+ylabel <- expression(Mean~~B^S/B[MSY]^S)
+ylim <- c(0,2)
+assessmentYears <- seq(10,40,by=10)
+x.at <- c(0,25,50)
+y.at <- c(0,1,2)
+
+layout(matrix(c(1:6,19,7:12,19,13:18,19), ncol=3, byrow=FALSE), heights=c(rep(1,6),0.75))
+par(mgp=c(1,0.2,0),mar=c(0,0,0,0),oma=c(1,4,3,3),tck=-0.025,xpd=TRUE,xaxs="i",yaxs="i")
+
+for(outName_i in MSEoutNames){
+topPanels <- (length(scenNames)*(seq_along(OM_Names)-1)+1)
+bottomPanels <- length(scenNames)*seq_along(OM_Names)
+leftPanels <- seq_along(scenNames)
+rightPanels <- tail(seq_along(MSEoutNames),length(scenNames))
+  
+i <- which(MSEoutNames==outName_i)
+out_i <- get(outName_i)
+MPNames <- out_i@MPs
+myvar <- slot(out_i,myvarName)
+SSBMSY <- slot(out_i,"OM")$SSBMSY
+
+myvar <- myvar/SSBMSY # Scale myvar (catch by SSBMSY)
+
+myvarsub <- myvar[,match(MPNamesSub,MPNames),]
+myvarsubMeans <- apply(myvarsub,2,function(x){apply(x,2,mean)})
+dimnames(myvarsubMeans) <- list(1:nrow(myvarsubMeans),MPNamesSub)
+
+xaxt_i <- ifelse(i%in%bottomPanels,"n","n")
+yaxt_i <- ifelse(i%in%leftPanels,"n","n")
+
+matplot(rownames(myvarsubMeans),myvarsubMeans,
+        col=cols,lty=ltys,lwd=lwds,type=types,
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+title(main=colLabsAll[i],line=1)
+# grid(col="black")
+points(par("usr")[1:2],c(1,1),type="l",lty="1111",lwd=1)
+abline(v=assessmentYears,lty="1111",lwd=1)
+if(i%in%topPanels){
+col.ct <- which(topPanels==i)
+mtext(colLabsAll[i],side=3,line=1,outer=TRUE,adj=c(0.15,0.5,0.97)[col.ct],font=2)
+}
+if(i%in%bottomPanels){
+x.at.i <- x.at
+if(i>bottomPanels[1]){x.at.i <- x.at[-1]}
+axis(side=1,at=x.at.i)
+}
+if(i%in%leftPanels){
+y.at.i <- y.at
+if(i>leftPanels[1]){y.at.i <- y.at[1:(length(y.at)-1)]}
+axis(side=2,at=y.at.i)
+}
+if(i%in%rightPanels){
+row.ct <- which(rightPanels==i)
+rowcenter <-par("usr")[3]+diff(par("usr")[3:4])/2
+text(x=par("usr")[2]*1.05,y=rowcenter,rowLabsAll[i],
+     srt=-90,xpd=NA,font=2)
+}
+
+}
+
+mtext(ylabel,side=2,line=1.5,outer=TRUE)
+mtext("Management year",side=1,line=1.5,outer=FALSE,adj=-4)
+plot.new()
+o <- c(1,2,3) # Order to plot legend elements
+legend("bottom",horiz=TRUE,bty="n",
+       legend=MPNamesSub_legtext[o],
+       col=cols[o],lty=ltys[o],lwd=lwds[o]
+       )
+```
+
+```{r plot Figure 7, fig.cap=paste0("\\label{fig:cmsyThreeMP} Annual mean relative yield from ",nsim_text," simulations for each species (columns) and scenario (rows) comparing the Averaged Index, Buffered Index and Projection MPs. Coloured lines correspond to the three MPs. Compare with Huynh et al (2020) Figure 7.")}
+# Figure 6: Mean relative yield
+myvarName <- "C"
+ylabel <- "Mean relative yield"
+ylim <- c(0,2)
+assessmentYears <- seq(10,40,by=10)
+x.at <- c(0,25,50)
+y.at <- c(0,1,2)
+
+layout(matrix(c(1:6,19,7:12,19,13:18,19), ncol=3, byrow=FALSE), heights=c(rep(1,6),0.75))
+par(mgp=c(1,0.2,0),mar=c(0,0,0,0),oma=c(1,4,3,3),tck=-0.025,xpd=TRUE,xaxs="i",yaxs="i")
+
+for(outName_i in MSEoutNames){
+topPanels <- (length(scenNames)*(seq_along(OM_Names)-1)+1)
+bottomPanels <- length(scenNames)*seq_along(OM_Names)
+leftPanels <- seq_along(scenNames)
+rightPanels <- tail(seq_along(MSEoutNames),length(scenNames))
+  
+i <- which(MSEoutNames==outName_i)
+out_i <- get(outName_i)
+MPNames <- out_i@MPs
+myvar <- slot(out_i,myvarName)
+MSY <- slot(out_i,"OM")$MSY
+
+myvar <- myvar/MSY # Scale myvar (catch by MSY)
+
+myvarsub <- myvar[,match(MPNamesSub,MPNames),]
+myvarsubMeans <- apply(myvarsub,2,function(x){apply(x,2,mean)})
+dimnames(myvarsubMeans) <- list(1:nrow(myvarsubMeans),MPNamesSub)
+
+xaxt_i <- ifelse(i%in%bottomPanels,"n","n")
+yaxt_i <- ifelse(i%in%leftPanels,"n","n")
+
+matplot(rownames(myvarsubMeans),myvarsubMeans,
+        col=cols,lty=ltys,lwd=lwds,type=types,
+        xaxt=xaxt_i,yaxt=yaxt_i,
+        xlim=xlim,ylim=ylim,xlab="",ylab="")
+title(main=colLabsAll[i],line=1)
+# grid(col="black")
+points(par("usr")[1:2],c(1,1),type="l",lty="1111",lwd=1)
+abline(v=assessmentYears,lty="1111",lwd=1)
+if(i%in%topPanels){
+col.ct <- which(topPanels==i)
+mtext(colLabsAll[i],side=3,line=1,outer=TRUE,adj=c(0.15,0.5,0.97)[col.ct],font=2)
+}
+if(i%in%bottomPanels){
+x.at.i <- x.at
+if(i>bottomPanels[1]){x.at.i <- x.at[-1]}
+axis(side=1,at=x.at.i)
+}
+if(i%in%leftPanels){
+y.at.i <- y.at
+if(i>leftPanels[1]){y.at.i <- y.at[1:(length(y.at)-1)]}
+axis(side=2,at=y.at.i)
+}
+if(i%in%rightPanels){
+row.ct <- which(rightPanels==i)
+rowcenter <-par("usr")[3]+diff(par("usr")[3:4])/2
+text(x=par("usr")[2]*1.05,y=rowcenter,rowLabsAll[i],
+     srt=-90,xpd=NA,font=2)
+}
+
+}
+
+mtext(ylabel,side=2,line=1.5,outer=TRUE)
+mtext("Management year",side=1,line=1.5,outer=FALSE,adj=-4)
+plot.new()
+o <- c(1,2,3) # Order to plot legend elements
+legend("bottom",horiz=TRUE,bty="n",
+       legend=MPNamesSub_legtext[o],
+       col=cols[o],lty=ltys[o],lwd=lwds[o]
+       )
+```
+
+\clearpage

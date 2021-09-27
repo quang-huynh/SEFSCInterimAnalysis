@@ -38,11 +38,12 @@ Region <- "Southeast US Atlantic"
 Sponsor <- "none"
 Latitude <-  mean(c(25.0,35.6))
 Longitude <- mean(c(-81.5,-74.0))
-nsim <- 48 # The number of simulations (48 is the minimum number you can run in parallel)
+nsim <- 250 # The number of simulations (48 is the minimum number you can run in parallel)
+nsim_RedSnapper <- 250
 proyears <- 50 # The number of projected years
 interval <- 4  # The assessment interval - how often would you like to update the management system?
 pstar <- 0.5 # The percentile of the sample of the management recommendation for each method
-maxF <- 0.8 # Maximum instantaneous fishing mortality rate that may be simulated for any given age class
+maxF <- 3.0 # Maximum instantaneous fishing mortality rate that may be simulated for any given age class
 reps <- 1 # Number of samples of the management recommendation for each method. Note that when this is set to 1, the mean value of the data inputs is used
 ```
 
@@ -97,6 +98,10 @@ R0_default <- 1000
 # Default autocorrelation for rec devs (in log space)
 AC_default <- NA#c(0.2)
 
+# Limit maximum value of proportion mature of first age class (usually age-1)
+# Some models fail when maturity of first age class is too high (e.g. >0.5)
+Mat_age1_max <- 0.4
+
 # par_cv: When generating parameters for Stock objects, mean values are observed from rdat.
 #         Coefficient of variation (CV) values are set to compute the standard deviation of
 #         a normal distribution from which to sample parameter values
@@ -104,6 +109,8 @@ par_cv <- c("TLinfinity"=0.1,"K"=0.1,"M"=0.1)
 ```
 
 ```{r user Fleet}
+fleetType <-"custom" #"Generic_Fleet" # Set to "custom" to use custom fleet. Otherwise set to name of preloaded Fleet
+
 # Scalars to compute upper and lower bounds of random uniform distribution from mean value.
 sc2 <- 0.1
 
@@ -162,18 +169,19 @@ Imp_name_user <- "Perfect_Imp"      # Huynh et al. used the "Perfect_Imp" Imp mo
 ```
 
 ```{r admin}
-dir_bam <- "bam_rdat"
-
+dir_bam_dat <-  "bam_dat"
+dir_bam_tpl <-  "bam_tpl"
+dir_bam_rdat <- "bam_rdat"
 ```
 
 ```{r read data}
 # Read in values that are not supplied by BAM rdat files
-Stock_otherValues <- read.csv("Stock_otherValues.csv")
-row.names(Stock_otherValues) <- Stock_otherValues$Name
+bamStockMisc <- read.csv("bamStockMisc.csv")
+row.names(bamStockMisc) <- bamStockMisc$Name
+save(bamStockMisc,file="bamStockMisc.RData")
 
 Fleet_otherValues <- read.csv("Fleet_otherValues.csv")
 row.names(Fleet_otherValues) <- Fleet_otherValues$Name
-
 
 # Read in operating models (OM) from Huynh et al 2020
 OM_filenames_huynh <- list.files("OM/Huynh_etal_2020")
@@ -203,15 +211,6 @@ if("D.taxa.csv"%in%list.files()){
 ```
 
 ```{r modify data}
-# Identify slotNames for each object class
-# sN_OM <- slotNames(testOM)
-# sN_Stock <- slotNames(Snapper)
-# sN_Fleet <- slotNames(Generic_Fleet)
-# sN_Obs <- slotNames(Generic_Obs)
-# sN_Imp <- slotNames(Perfect_Imp)
-# # Identify slotNames unique to OM class objects
-# sN_OM_unique <- sN_OM[which(!sN_OM%in%unique(c(sN_Stock,sN_Fleet,sN_Obs,sN_Imp)))]
-
 ## Split up Huynh OM into components
 for(i in OM_names_huynh_new){
   OM_i <- get(i)
@@ -251,14 +250,17 @@ There are various ways of building and operating model or one of the component o
 There are two `Stock` objects available with the `DLMtool` that are based on SA stocks. `Snapper` is based on Red Snapper and `Porgy` is based on Red Porgy. Using these objects as references, I am writing a script to build stock objects for our species from BAM rdat files.
 
 ```{r load bam data}
-bam_common_name <- unlist(str_extract_all(list.files(dir_bam),"^.*(?=(SEDAR))"))
+bam_common_name <- unlist(str_extract_all(list.files(dir_bam_rdat),"^.*(?=(SEDAR))"))
 bam_rdat_name <- paste("rdat",bam_common_name,sep="_")
 # Get bam rdat lists
-for(file_i in list.files(dir_bam)){
+for(file_i in list.files(dir_bam_rdat)){
   bam_common_name_i <- unlist(str_extract_all(file_i,"^.*(?=(SEDAR))"))
-  rdat_i <- dget(file.path(dir_bam,file_i))
+  rdat_path_i <- file.path(dir_bam_rdat,file_i)
+  rdat_i <- dget(rdat_path_i)
   rdat_name_i <- paste("rdat",bam_common_name_i,sep="_")
   assign(rdat_name_i,rdat_i)
+  # Save rdat lists as RData files
+  save(list=rdat_name_i,file=file.path("bam_rdat_RData",paste0(rdat_name_i,".RData")))
 }
 rm("rdat_i")
 ```
@@ -267,6 +269,7 @@ rm("rdat_i")
 bam_common_name_sub <- c(
   "BlackSeaBass",
   "BluelineTilefish",
+  "Cobia",
   "Gag",
   "GoldenTilefish",
   "GrayTriggerfish",
@@ -321,8 +324,12 @@ for(rdat_name_i in bam_rdat_sub){
   parms_i <- rdat_i$parms
   parm.cons_i <- rdat_i$parm.cons
   a.series_i <- rdat_i$a.series
+  years_i <- paste(parms_i$styr:parms_i$endyr)
   
   Name_i <- gsub("rdat_","",rdat_name_i)
+  if(Name_i=="RedSnapper"){
+    nsim_i <- nsim_RedSnapper
+  }else{nsim_i <- nsim}
   
   herm_i <- Fleet_otherValues[Name_i,"Hermaphroditism"]
   
@@ -350,7 +357,7 @@ for(rdat_name_i in bam_rdat_sub){
   slot(Stock_i,"Name") <- Name_i
   slot(Stock_i,"Common_Name") <- Name_i
   slot(Stock_i,"Species") <- Name_i
-  slot(Stock_i,"maxage") <- length(a.series_i$age) # #Stock_otherValues[Name_i,"maxage"]
+  slot(Stock_i,"maxage") <- length(a.series_i$age) # #bamStockMisc[Name_i,"maxage"]
   slot(Stock_i,"R0") <- R0_i # Note that units may vary (e.g. eggs or Age-1)
   slot(Stock_i,"M") <-  a.series_i$M*M_constant_sc[1] # lower bound of age-dependent M
   slot(Stock_i,"M2") <- a.series_i$M*M_constant_sc[2] # upper bound of age-dependent M
@@ -387,9 +394,7 @@ for(rdat_name_i in bam_rdat_sub){
   slot(Stock_i,"Frac_area_1")  <-  Frac_area_1
   slot(Stock_i,"Prob_staying") <-  Prob_staying
   
-  # Compute maturity-at-length L50 and L50_95
-    mat_at_len_i <- local({
-    pmatage <- with(a.series_i,
+     pmatage_i <- with(a.series_i,
                     {
                       if(herm_i=="gonochoristic"){ # If gonochoristic use female maturity
                         out <- mat.female  
@@ -401,17 +406,22 @@ for(rdat_name_i in bam_rdat_sub){
                         out <- mat.female*prop.female+mat.male*(1-prop.female)
                       }
                       names(out) <- age
+                      out[1] <- min(out[[1]],Mat_age1_max)
                       out
                     }  
-    )
-    age <- as.numeric(names(pmatage))
+    )  
+  
+  # Compute maturity-at-length L50 and L50_95
+    mat_at_len_i <- local({
+    age <- as.numeric(names(pmatage_i))
+    print(age)
     lenage <- setNames(vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age)*length_sc,age)
-    pmatdata <- cbind("matYes"=pmatage,"matNo"=1-pmatage)*1000
+    pmatdata <- cbind("matYes"=pmatage_i,"matNo"=1-pmatage_i)*1000
     
     # If maturity vector is knife-edged don't bother trying to estimate a logistic curve
-    if(all(pmatage%in%c(0,1))){
-    age_1 <- age[max(which(pmatage==0))]
-    age_2 <- age[min(which(pmatage==1))]  
+    if(all(pmatage_i%in%c(0,1))){
+    age_1 <- age[max(which(pmatage_i==0))]
+    age_2 <- age[min(which(pmatage_i==1))]  
       
     len_1 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_1)*length_sc
     len_2 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_2)*length_sc
@@ -424,7 +434,7 @@ for(rdat_name_i in bam_rdat_sub){
     
     age_pr <- seq(0,max(age),length=1000)
     len_pr <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age_pr)*length_sc
-    pmat_pr <- approx(age,pmatage,xout = age_pr)$y
+    pmat_pr <- approx(age,pmatage_i,xout = age_pr)$y
 
     }else{
     fit <- glm(pmatdata~age,family=binomial(link='logit'))
@@ -439,15 +449,15 @@ for(rdat_name_i in bam_rdat_sub){
     len95 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=age95)*length_sc # length at 95% maturity
     }
     
-    # par(mfrow=c(2,1))
-    # 
-    # plot(age,pmatage,pch=16,main=Name_i,xlim=range(c(0,age)),ylim=c(0,1))
-    # points(age_pr,pmat_pr,type="l")
-    # abline(v=c(age50,age95),col="blue",lty=2)
-    # 
-    # plot(lenage,pmatage,pch=16,main=Name_i,xlab="length",xlim=range(c(0,lenage)),ylim=c(0,1))
-    # points(len_pr,pmat_pr,type="l")
-    # abline(v=c(len50,len95),col="blue",lty=2)    
+    par(mfrow=c(2,1))
+
+    plot(age,pmatage_i,pch=16,main=Name_i,xlim=range(c(0,age)),ylim=c(0,1))
+    points(age_pr,pmat_pr,type="l")
+    abline(v=c(age50,age95),col="blue",lty=2)
+
+    plot(lenage,pmatage_i,pch=16,main=Name_i,xlab="length",xlim=range(c(0,lenage)),ylim=c(0,1))
+    points(len_pr,pmat_pr,type="l")
+    abline(v=c(len50,len95),col="blue",lty=2)
 
     return(list("L50"=len50,"L50_95"=len95-len50))
     })
@@ -471,6 +481,24 @@ for(rdat_name_i in bam_rdat_sub){
     slot(Stock_i,"Source") <- paste0(paste(unlist(info_i[c("species","title","date")]),collapse = "; "),"; rdat file")
     
   assign(Stock_name_i,Stock_i)
+  
+  # cpars
+  if(fleetType=="custom"){
+  nyears_i <- length(parms_i$styr:parms_i$endyr)
+  }else{
+  Fleet_i <- get(fleetType)
+  nyears_i <- Fleet_i@nyears
+  }
+
+   Mat_age_dim_i <- c(nsim_i,length(pmatage_i),nyears_i+proyears)
+   Mat_age_i <- array(data = rep(pmatage_i,each=nsim_i), dim = Mat_age_dim_i,
+                      dimnames=list("sim"=seq_len(Mat_age_dim_i[1]),
+                                    "mat"=seq_len(Mat_age_dim_i[2]),
+                                    "year"=seq_len(Mat_age_dim_i[3])))
+   cpars_i <- list()
+   cpars_i$Mat_age <- Mat_age_i
+   cpars_i$D <- rep(dep[[Name_i]],nsim_i)
+   assign(paste0("cpars_",Name_i),cpars_i)
 }
 
 ```
@@ -488,7 +516,11 @@ for(rdat_name_i in bam_rdat_sub){
   rdat_i <- get(rdat_name_i)
 
   Name_i <- gsub("rdat_","",rdat_name_i)
-  GenusSpecies_i <- Stock_otherValues[Name_i,"Species"]
+  if(Name_i=="RedSnapper"){
+    nsim_i <- nsim_RedSnapper
+  }else{nsim_i <- nsim}
+  
+  GenusSpecies_i <- bamStockMisc[Name_i,"Species"]
   genus_i <- unlist(str_extract_all(GenusSpecies_i,"^[A-Za-z]+"))
   #unlist(str_extract_all(GenusSpecies_i," ([\\s\\S]*)$"))
   species_i <- unlist(str_split(GenusSpecies_i," "))[2]
@@ -513,7 +545,7 @@ for(rdat_name_i in bam_rdat_sub){
    K_i <- parm.cons_i$K[1]
    t0_i <- parm.cons_i$t0[1]
    M_i <- parm.cons_i$M_constant[1]
-   tmax_i <- Stock_otherValues[Name_i,"maxage"]
+   tmax_i <- bamStockMisc[Name_i,"maxage"]
    A50_i <- A50[[Name_i]]
    rec_sigma_i <- parm.cons_i$rec_sigma[1]
    rec_AC_i <- rec_AC[[Name_i]]
@@ -574,42 +606,24 @@ for(rdat_name_i in bam_rdat_sub){
   par_cor_i <- cov2cor(par_cov_i)
   
    par_pred_i <- rnorm_multi(
-     n = nsim,
+     n = nsim_i,
      mu = par_mu_i,
      sd = par_sd_i,
      r = as.numeric(par_cor_i),
      varnames = c("Linf", "K","M"),
      empirical = FALSE)
    
-   cpars_i <- as.list(par_pred_i)
-   cpars_i$D <- rep(dep[[Name_i]],nsim)
+   cpars_i <- get(paste0("cpars_",Name_i))
+   cpars_i <- c(cpars_i,as.list(par_pred_i))
    assign(paste0("cpars_",Name_i),cpars_i)
 }  
 rm(cpars_i)
 ```
 
-```{r compare Fleets, eval=FALSE}
-# Just some simple code to let you look at how items have been defined in various Fleet objects
-Fleet_avail <- avail("Fleet")
-Fleet_avail <- Fleet_avail[!grepl("OM_",Fleet_avail)]
-Fleet_preview <- list()
-
-for(Fleet_name_i in Fleet_avail){
-  i <- which(Fleet_avail==Fleet_name_i)
-  Fleet_i <- get(Fleet_name_i)
-  data_i <- sapply(slotNames(Fleet_i),FUN=function(x){
-    obj_i <- slot(Fleet_i,x)
-    if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
-    paste(obj_i,collapse=", ")
-    })
-  # print(Fleet_name_i)
-  # print(data_i)
-  Fleet_preview[[i]] <- data_i
-  rm(Fleet_i)
-}
-names(Fleet_preview) <- Fleet_avail
-
- Fleet_preview <- do.call(rbind,Fleet_preview)
+```{r jury rig Stock}
+# Try a different value for steepness to see if the model runs better for Huynh et al's dep scenario
+# (Yes it ran better)
+Stock_RedSnapper@h <- c(0.84,0.84)
 ```
 
 ```{r build Fleet}
@@ -628,6 +642,9 @@ for(rdat_name_i in bam_rdat_sub){
   t.series_i <- rdat_i$t.series[years_i,]
   
   Name_i <- gsub("rdat_","",rdat_name_i)
+    if(Name_i=="RedSnapper"){
+    nsim_i <- nsim_RedSnapper
+  }else{nsim_i <- nsim}
 
   # Mess around with inconsistent rdat naming
   names(t.series_i) <- gsub("total.L.wgt.klb","total.L.klb",names(t.series_i))    
@@ -635,7 +652,7 @@ for(rdat_name_i in bam_rdat_sub){
   # identify parameter names from BAM rdat
   # R0_name <- c("R0","BH.R0")[which(c("R0","BH.R0")%in%names(parms_i))][1]
   
-  print(rdat_name_i)
+  # print(rdat_name_i)
   
   ## Effort
   # E=C/qB # Effort calculation from Haddon 2011 page 290 Eq. 11.4
@@ -653,7 +670,7 @@ for(rdat_name_i in bam_rdat_sub){
    slot(Fleet_i,"nyears") <- nyears_i
    slot(Fleet_i,"Spat_targ") <- Spat_targ
   
-   slot(Fleet_i,"EffYears") <- as.numeric(years_i)
+   slot(Fleet_i,"EffYears") <- 1:nyears_i # Should be a sequence of integers starting with 1, not actual years
    slot(Fleet_i,"EffLower") <- E_i*Eff_sc[1]
    slot(Fleet_i,"EffUpper") <- E_i*Eff_sc[2]
    slot(Fleet_i,"Esd") <- Esd
@@ -667,10 +684,10 @@ for(rdat_name_i in bam_rdat_sub){
    seldata_i <- seldata_i/max(seldata_i) # Scaled as a proportion of maximum selectivity
    
    age <- as.numeric(names(seldata_i))
-   selage <- seldata_i 
+   selage_i <- seldata_i 
    
    age_pr <- seq(min(age),max(age),length=1000)
-   sel_pr <- approx(age,selage,xout = age_pr)$y
+   sel_pr <- approx(age,selage_i,xout = age_pr)$y
    
    agesel_05 <- age_pr[which.min(abs(sel_pr-0.05))] # age at 5% selection
    agesel_100 <- age_pr[which.min(abs(sel_pr-1.00))] # age at 100% selection
@@ -685,11 +702,11 @@ for(rdat_name_i in bam_rdat_sub){
    lensel_100 <- vb_len(Linf=Linf_i, K=K_i, t0=t0_i, a=agesel_100)*length_sc # Length at 100% selection
    
    # par(mfrow=c(2,1))
-   # plot(age,selage,pch=16,main=Name_i)
+   # plot(age,selage_i,pch=16,main=Name_i)
    # points(age_pr,sel_pr,type="l")
    # abline(v=c(agesel_05,agesel_100),col="blue",lty=2)
    # 
-   # plot(lenage,selage,pch=16,main=Name_i)
+   # plot(lenage,selage_i,pch=16,main=Name_i)
    # points(len_pr,sel_pr,type="l")
    # abline(v=c(lensel_05,lensel_100),col="blue",lty=2)
 
@@ -711,7 +728,49 @@ for(rdat_name_i in bam_rdat_sub){
     
    
    assign(Fleet_name_i,Fleet_i)
+   
+   # cpars
+  if(fleetType=="custom"){
+  selage_i <- rdat_i$sel.age$sel.v.wgted.L/max(rdat_i$sel.age$sel.v.wgted.L) # Scaled to a maximum of 1
+  }else{
+  Fleet_i <- get(fleetType)
+  selage_i <- Fleet_i@nyears
+  }
+
+   V_dim_i <- c(nsim_i,length(selage_i),length(years_i)+proyears)
+   V_i <- array(data = rep(selage_i,each=nsim_i), dim = V_dim_i,
+                      dimnames=list("sim"=seq_len(V_dim_i[1]),
+                                    "sel"=seq_len(V_dim_i[2]),
+                                    "year"=seq_len(V_dim_i[3])))
+   cpars_i <- get(paste0("cpars_",Name_i))
+   cpars_i$V <- V_i
+   assign(paste0("cpars_",Name_i),cpars_i)
 }
+rm("Fleet_i")
+```
+
+```{r compare Fleets, eval=TRUE}
+# Just some simple code to let you look at how items have been defined in various Fleet objects
+Fleet_avail <- avail("Fleet")
+Fleet_avail <- Fleet_avail[!grepl("OM_",Fleet_avail)]
+Fleet_preview <- list()
+
+for(Fleet_name_i in Fleet_avail){
+  i <- which(Fleet_avail==Fleet_name_i)
+  Fleet_i <- get(Fleet_name_i)
+  data_i <- sapply(slotNames(Fleet_i),FUN=function(x){
+    obj_i <- slot(Fleet_i,x)
+    if(is.numeric(obj_i)){obj_i <- signif(obj_i,4)}
+    paste(obj_i,collapse=", ")
+    })
+  # print(Fleet_name_i)
+  # print(data_i)
+  Fleet_preview[[i]] <- data_i
+  rm(Fleet_i)
+}
+names(Fleet_preview) <- Fleet_avail
+
+ Fleet_preview <- do.call(rbind,Fleet_preview)
 ```
 
 ```{r compare Obs, eval=FALSE}
@@ -744,18 +803,11 @@ for(rdat_name_i in bam_rdat_sub){
   Obs_name_i <- gsub("rdat","Obs",rdat_name_i)
   assign(Obs_name_i,Obs_init)
   Obs_i <- get(Obs_name_i)
-  rdat_i <- get(rdat_name_i)
-  
-  info_i <- rdat_i$info
-  parms_i <- rdat_i$parms
-  parm.cons_i <- rdat_i$parm.cons
-  years_i <- paste(parms_i$styr:parms_i$endyr)
-  t.series_i <- rdat_i$t.series[years_i,]
-  
+
   Name_i <- gsub("rdat_","",rdat_name_i)
   
   # Set slot values
-  slot(Obs_i,"Name") <- Name_i
+  # slot(Obs_i,"Name") <- Name_i
   
   assign(Obs_name_i,Obs_i)
   
@@ -805,9 +857,17 @@ OM_name_bam <- gsub("rdat","OM",bam_rdat_sub) # OM names from bam models
 for(rdat_name_i in bam_rdat_sub){
   OM_name_i <- gsub("rdat","OM",rdat_name_i)
   Name_i <- gsub("rdat_","",rdat_name_i)
+    if(Name_i=="RedSnapper"){
+    nsim_i <- nsim_RedSnapper
+  }else{nsim_i <- nsim}
+
   
   Stock_i <- get(paste0("Stock_",Name_i))
+  if(fleetType=="custom"){
   Fleet_i <- get(paste0("Fleet_",Name_i))
+  }else{
+  Fleet_i <- get(fleetType)  
+  }
   Obs_i <- get(paste0("Obs_",Name_i))
   Imp_i <- get(paste0("Imp_",Name_i))
   OM_i <- new("OM", Stock_i, Fleet_i, Obs_i, Imp_i)
@@ -818,15 +878,21 @@ for(rdat_name_i in bam_rdat_sub){
   slot(OM_i,"Sponsor") <- Sponsor
   slot(OM_i,"Latitude") <- Latitude
   slot(OM_i,"Longitude") <- Longitude
-  slot(OM_i,"nsim") <- nsim
+  slot(OM_i,"nsim") <- nsim_i
   slot(OM_i,"proyears") <- proyears
   slot(OM_i,"interval") <- interval
   slot(OM_i,"pstar") <- pstar
+  slot(OM_i,"maxF") <- maxF
   slot(OM_i,"reps") <- reps
   
   assign(OM_name_i,OM_i)
 }
   rm("OM_i")
+```
+
+```{r assemble OM special}
+OM_RedSnapper2 <- Replace(OM_RedSnapper,Generic_Fleet,
+                          Name=gsub("Fleet:RedSnapper","Fleet:Generic",OM_RedSnapper@Name))
 ```
 
 ```{r add cpars}
@@ -855,18 +921,99 @@ for(rdat_name_i in bam_rdat_sub){
   OM_i@cpars <- cpars_i
   assign(OM_name_i,OM_i)
   
-  plot(as.data.frame(cpars_i),main=Name_i)
+  #Splot(as.data.frame(cpars_i),main=Name_i)
 }
 
 ```
+
+```{r make FrankenSnapper}
+OM_FrankenSnapper       <- OM_VermilionSnapper
+age_i                   <- 1:OM_VermilionSnapper@maxage
+
+OM_FrankenSnapper@K     <- OM_RedSnapper@K
+OM_FrankenSnapper@Linf  <- OM_RedSnapper@Linf
+OM_FrankenSnapper@t0    <- OM_RedSnapper@t0
+OM_FrankenSnapper@M     <- OM_RedSnapper@M[age_i]
+OM_FrankenSnapper@M2    <- OM_RedSnapper@M2[age_i]
+
+# Change cpars
+   cpars_i <- cpars_VermilionSnapper
+
+   Mat_age_dim_i <- dim(cpars_i$Mat_age)
+   nage_i <- Mat_age_dim_i[2]
+   pmatage_i <- cpars_RedSnapper$Mat_age[1,age_i,1]
+   nsim_i <- Mat_age_dim_i[1]
+   Mat_age_i <- array(data = rep(pmatage_i,each=nsim_i), dim = Mat_age_dim_i,
+                      dimnames=list("sim"=seq_len(Mat_age_dim_i[1]),
+                                    "mat"=seq_len(Mat_age_dim_i[2]),
+                                    "year"=seq_len(Mat_age_dim_i[3])))
+   V_dim_i <- dim(cpars_i$V)
+   selage_i <- cpars_RedSnapper$V[1,age_i,1]
+   V_i <- array(data = rep(selage_i,each=nsim_i), dim = V_dim_i,
+                      dimnames=list("sim"=seq_len(V_dim_i[1]),
+                                    "sel"=seq_len(V_dim_i[2]),
+                                    "year"=seq_len(V_dim_i[3])))
+   
+   cpars_i$Mat_age <- Mat_age_i
+   cpars_i$D <- cpars_RedSnapper$D
+   cpars_i$K <- cpars_RedSnapper$K
+   cpars_i$Linf <- cpars_RedSnapper$Linf
+   cpars_i$V <- V_i
+   
+   slot(OM_FrankenSnapper,"cpars") <- cpars_i
+
+
+saveRDS(OM_FrankenSnapper,file= file.path("OM","SEFSC",paste0("OM_FrankenSnapper",".rds")),compress=FALSE)
+```
+
+```{r make FrankenSnapper2}
+OM_FrankenSnapper2  <- OM_RedSnapper
+nage_i              <- 12
+age_i               <- 1:nage_i
+
+OM_FrankenSnapper2@maxage <- nage_i
+OM_FrankenSnapper2@M     <- OM_RedSnapper@M[age_i]
+OM_FrankenSnapper2@M2    <- OM_RedSnapper@M2[age_i]
+
+# Change cpars
+   cpars_i <- cpars_RedSnapper
+
+   Mat_age_dim_i <- dim(cpars_i$Mat_age)
+   Mat_age_dim_i[2] <- nage_i
+   pmatage_i <- cpars_RedSnapper$Mat_age[1,age_i,1]
+   nsim_i <- Mat_age_dim_i[1]
+   Mat_age_i <- array(data = rep(pmatage_i,each=nsim_i), dim = Mat_age_dim_i,
+                      dimnames=list("sim"=seq_len(Mat_age_dim_i[1]),
+                                    "mat"=seq_len(Mat_age_dim_i[2]),
+                                    "year"=seq_len(Mat_age_dim_i[3])))
+   V_dim_i <- dim(cpars_i$V)
+   V_dim_i[2] <- nage_i
+   selage_i <- cpars_RedSnapper$V[1,age_i,1]
+   V_i <- array(data = rep(selage_i,each=nsim_i), dim = V_dim_i,
+                      dimnames=list("sim"=seq_len(V_dim_i[1]),
+                                    "sel"=seq_len(V_dim_i[2]),
+                                    "year"=seq_len(V_dim_i[3])))
+   
+   cpars_i$Mat_age <- Mat_age_i
+   cpars_i$D <- cpars_RedSnapper$D
+   cpars_i$K <- cpars_RedSnapper$K
+   cpars_i$Linf <- cpars_RedSnapper$Linf
+   cpars_i$V <- V_i
+
+   slot(OM_FrankenSnapper2,"cpars") <- cpars_i
+
+saveRDS(OM_FrankenSnapper2,file= file.path("OM","SEFSC",paste0("OM_FrankenSnapper2",".rds")),compress=FALSE)
+```
+
 
 ```{r plot and save OM}
 if(plot_OM){
 OMToPlot <- local({
   a <- avail("OM")
-  a[!a%in%c("testOM","OM_i")]
+  a[!a%in%c("testOM","OM_i"#,"OM_GrayTriggerfish", "OM_GreaterAmberjack", "OM_RedSnapper","OM_VermilionSnapper"
+    )]
 })
-for(OM_name_i in OMToPlot){
+for(OM_name_i in c("OM_FrankenSnapper2")){#OMToPlot){
   pdf(file.path("fig/OM",paste0(OM_name_i,".pdf")),width = 12,height = 8)
   OM_i <- get(OM_name_i)
   plot(OM_i)

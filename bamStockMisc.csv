@@ -1,0 +1,15 @@
+Name,Species,maxage,herm
+BlackSeaBass,Centropristis striata,11,protogynous
+BluelineTilefish,Caulolatilus microps,40,gonochoristic
+Cobia,Rachycentron canadum,16,gonochoristic
+Gag,Mycteroperca microlepis,30,protogynous
+GoldenTilefish,Lopholatilus chamaeleonticeps,40,gonochoristic
+GrayTriggerfish,Balistes capriscus,15,gonochoristic
+GreaterAmberjack,Seriola dumerili,17,gonochoristic
+AtlanticMenhaden,Brevoortia tyrannus,10,gonochoristic
+RedGrouper,Epinephelus morio,26,protogynous
+RedPorgy,Pagrus pagrus,25,protogynous
+RedSnapper,Lutjanus campechanus,51,gonochoristic
+SnowyGrouper,Hyporthodus niveatus,56,protogynous
+SpanishMackerel,Scomberomorus maculatus,12,gonochoristic
+VermilionSnapper,Rhomboplites aurorubens,19,gonochoristic
