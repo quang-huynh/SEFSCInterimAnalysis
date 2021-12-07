@@ -1,0 +1,69 @@
+---
+title: "Application of Huynh 2020 Interim Analysis methods to assessed stocks from the US South Atlantic"
+author: "Nikolai Klibansky"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+  fig_caption: yes
+extra_dependencies:
+  longtable: null
+xcolor: null
+urlcolor: blue
+---
+
+
+```{r setup, include=FALSE, echo=FALSE}
+library(MSEtool)
+library(SAMtool)
+library(dplyr)
+library(ggplot2)
+
+```
+
+```{r}
+
+# Use the first 3 simulations
+OM <- readRDS("OM/SEFSC/OM_BlackSeaBass.rds") %>% SubCpars(sims = 1:3)
+
+# Plot biology
+#OM@cpars$Wt_age[1, , ] %>% matplot(typ = 'l')
+#OM@cpars$Len_age[1, , ] %>% matplot(typ = 'l')
+#OM@cpars$M_ageArray[1, , ] %>% matplot(typ = 'l')
+#OM@cpars$Mat_age[1, , ] %>% matplot(typ = 'l')
+
+# Plot selectivity
+#OM@cpars$V[1, , 1:OM@nyears] %>% matplot(typ = 'l')
+SAMtool::plot_composition(Year = OM@CurrentYr - OM@nyears:1 + 1, obs = OM@cpars$V[1, , 1:OM@nyears] %>% t(), ages = 0:OM@maxage,
+                          annual_yscale = "raw", annual_ylab = "Selectivity", N = NULL)
+```
+
+```{r}
+Hist <- Simulate(OM)
+
+# This is the MP being created
+#make_MP(.Assess = "SCA_Pope", .HCR = "HCR_MSY", MSY_frac = 1,
+#        diagnostic = "min")
+
+# Run SCA_Pope
+Assess <- lapply(1:OM@nsim, SCA_Pope, Data = Hist@Data)
+#plot(Assess[[1]])
+
+# Compare estimated vs. OM SSB (horizontal line = SSBMSY)
+Assess_SSB <- lapply(1:OM@nsim, function(x) {
+  data.frame(SSB = Assess[[x]]@SSB, SSBMSY = Assess[[x]]@SSBMSY,
+             Year = names(Assess[[x]]@SSB_SSBMSY) %>% as.numeric(), Sim = x, Type = "Est")
+}) %>% bind_rows()
+
+Sim_SSB <- lapply(1:OM@nsim, function(x) {
+  data.frame(SSB = rowSums(Hist@TSdata$SBiomass[x, , ]), SSBMSY = Hist@Ref$ByYear$SSBMSY[x, OM@nyears],
+             Year = OM@CurrentYr - OM@nyears:1 + 1, Sim = x, Type = "OM")
+}) %>% bind_rows()
+
+rbind(Assess_SSB, Sim_SSB) %>%
+  ggplot(aes(Year, SSB, linetype = Type)) +
+  facet_wrap(~ Sim) +
+  theme_bw() + geom_line() + expand_limits(y = 0) +
+  geom_hline(aes(yintercept = SSBMSY, linetype = Type))
+```
+
+
